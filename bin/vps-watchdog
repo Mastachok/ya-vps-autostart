@@ -1,45 +1,378 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 APP_DIR="/opt/vps-watchdog"
 PROFILES_DIR="$APP_DIR/profiles"
-ACTIVE_PROFILE="$(cat $APP_DIR/ACTIVE_PROFILE 2>/dev/null || echo default)"
+ACTIVE_FILE="$APP_DIR/ACTIVE_PROFILE"
+SERVICE="vps-watchdog.service"
 
-color_ok="\e[32m✔\e[0m"
-color_bad="\e[31m✘\e[0m"
-
-has_key() {
-  [[ -f "$PROFILES_DIR/$ACTIVE_PROFILE.sa-key.json" ]] && echo "$color_ok" || echo "$color_bad"
+# ---------- helpers ----------
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Запусти с sudo: sudo vps-watchdog"
+    exit 1
+  fi
 }
 
-container_status() {
-  docker ps --format '{{.Names}}' | grep -q vps-watchdog && echo "$color_ok" || echo "$color_bad"
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+pause() { read -r -p "Enter..." _; }
+
+c_ok="\e[32m✔\e[0m"
+c_bad="\e[31m✘\e[0m"
+c_warn="\e[33m!\e[0m"
+c_dim="\e[2m"
+c_rst="\e[0m"
+
+active_profile() {
+  [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo "default"
 }
+
+env_path() { echo "$PROFILES_DIR/$(active_profile).env"; }
+key_path() { echo "$PROFILES_DIR/$(active_profile).sa-key.json"; }
+
+apply_active_env() {
+  local src
+  src="$(env_path)"
+  if [[ -f "$src" ]]; then
+    cp -f "$src" "$APP_DIR/.env"
+  fi
+}
+
+container_state() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "vps-watchdog"; then
+    echo "$c_ok Up"
+  else
+    # maybe exists but exited
+    if docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q '^vps-watchdog '; then
+      echo "$c_bad Down"
+    else
+      echo "$c_bad Missing"
+    fi
+  fi
+}
+
+service_state() {
+  if systemctl is-enabled "$SERVICE" >/dev/null 2>&1; then
+    if systemctl is-active "$SERVICE" >/dev/null 2>&1; then
+      # oneshot can be "active (exited)" — it's fine
+      echo "$c_ok Enabled"
+    else
+      echo "$c_warn Enabled/Inactive"
+    fi
+  else
+    echo "$c_bad Disabled"
+  fi
+}
+
+key_state() {
+  local kp
+  kp="$(key_path)"
+  if [[ -f "$kp" ]] && [[ -s "$kp" ]]; then
+    echo "$c_ok Present"
+  else
+    echo "$c_bad Missing"
+  fi
+}
+
+load_env_safe() {
+  # shellcheck disable=SC1090
+  if [[ -f "$APP_DIR/.env" ]]; then
+    set +u
+    source "$APP_DIR/.env"
+    set -u
+  fi
+}
+
+ping_state() {
+  load_env_safe
+  local host="${VM_HOST:-}"
+  if [[ -z "$host" ]]; then
+    echo "$c_bad VM_HOST?"
+    return
+  fi
+  if ping -c 1 -W 1 "$host" >/dev/null 2>&1; then
+    echo "$c_ok OK"
+  else
+    echo "$c_bad DOWN"
+  fi
+}
+
+list_profiles() {
+  ls -1 "$PROFILES_DIR" 2>/dev/null | sed -n 's/\.env$//p' | sort -u
+}
+
+pick_profile_cli() {
+  echo
+  echo "Доступные профили:"
+  local i=0 p
+  while read -r p; do
+    [[ -n "$p" ]] || continue
+    i=$((i+1))
+    echo "  $i) $p"
+  done < <(list_profiles)
+
+  if [[ "$i" -eq 0 ]]; then
+    echo
+    echo "Профилей нет."
+    return 1
+  fi
+
+  echo
+  read -r -p "Выбери номер: " n
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  p="$(list_profiles | sed -n "${n}p")"
+  [[ -n "$p" ]] || return 1
+  echo "$p"
+}
+
+edit_file() {
+  local f="$1"
+  ${EDITOR:-nano} "$f"
+}
+
+# ---------- actions ----------
+act_service_start()   { systemctl start "$SERVICE"; echo "OK"; pause; }
+act_service_stop()    { systemctl stop "$SERVICE" || true; echo "OK"; pause; }
+act_service_restart() { systemctl restart "$SERVICE"; echo "OK"; pause; }
+act_service_status()  { systemctl status "$SERVICE" --no-pager; pause; }
+
+act_logs() {
+  echo "Логи контейнера (Ctrl+C чтобы выйти):"
+  docker logs -f --tail=200 vps-watchdog || true
+}
+
+act_test_ping() {
+  load_env_safe
+  echo "VM_HOST=${VM_HOST:-<не задан>}"
+  if [[ -n "${VM_HOST:-}" ]]; then
+    ping -c 3 -W 2 "${VM_HOST}" || true
+  fi
+  pause
+}
+
+act_profiles_list() {
+  echo "Профили в $PROFILES_DIR:"
+  list_profiles || true
+  pause
+}
+
+act_profiles_add() {
+  mkdir -p "$PROFILES_DIR"
+  local name host iid interval attempts timeout
+  echo "Создание профиля"
+  read -r -p "Имя профиля (например ru-node19): " name
+  [[ -n "$name" ]] || { echo "Пустое имя"; pause; return; }
+
+  read -r -p "VM_HOST (IP/DNS): " host
+  [[ -n "$host" ]] || { echo "Пустой VM_HOST"; pause; return; }
+
+  read -r -p "INSTANCE_ID (UUID в YC): " iid
+  [[ -n "$iid" ]] || { echo "Пустой INSTANCE_ID"; pause; return; }
+
+  read -r -p "CHECK_INTERVAL (сек) [60]: " interval
+  interval="${interval:-60}"
+
+  read -r -p "PING_ATTEMPTS [5]: " attempts
+  attempts="${attempts:-5}"
+
+  read -r -p "PING_TIMEOUT (сек) [5]: " timeout
+  timeout="${timeout:-5}"
+
+  cat > "$PROFILES_DIR/$name.env" <<EOF
+PROFILE_NAME=$name
+VM_HOST=$host
+INSTANCE_ID=$iid
+CHECK_INTERVAL=$interval
+PING_ATTEMPTS=$attempts
+PING_TIMEOUT=$timeout
+SA_KEY_FILE=/app/profiles/$name.sa-key.json
+EOF
+
+  # ключ создадим из YC-меню или положишь вручную
+  touch "$PROFILES_DIR/$name.sa-key.json"
+  chmod 600 "$PROFILES_DIR/$name.sa-key.json" || true
+
+  echo "Профиль '$name' создан."
+  echo "Дальше: переключись на него и сделай 'YC: Create Service Account + Key'."
+  pause
+}
+
+act_profiles_switch() {
+  local p
+  p="$(pick_profile_cli)" || { pause; return; }
+  echo "$p" > "$ACTIVE_FILE"
+  apply_active_env
+  systemctl restart "$SERVICE"
+  echo "Активный профиль: $p"
+  pause
+}
+
+act_profiles_edit() {
+  local p
+  p="$(pick_profile_cli)" || { pause; return; }
+  edit_file "$PROFILES_DIR/$p.env"
+  # если редактировали активный — применим
+  if [[ "$p" == "$(active_profile)" ]]; then
+    apply_active_env
+    systemctl restart "$SERVICE"
+  fi
+  echo "OK"
+  pause
+}
+
+act_profiles_remove() {
+  local p
+  p="$(pick_profile_cli)" || { pause; return; }
+  echo
+  read -r -p "Удалить профиль '$p'? (yes/no): " ans
+  if [[ "$ans" == "yes" ]]; then
+    rm -f "$PROFILES_DIR/$p.env" "$PROFILES_DIR/$p.sa-key.json"
+    echo "Удалено."
+  else
+    echo "Отмена."
+  fi
+  pause
+}
+
+act_yc_create_sa_key() {
+  if ! have_cmd yc; then
+    echo "yc CLI не найден."
+    echo "Установить yc можно так:"
+    echo "  curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash"
+    echo "  source ~/.bashrc"
+    echo "  yc init"
+    pause
+    return
+  fi
+  if ! have_cmd jq; then
+    echo "Нужен jq. Установи: apt-get update && apt-get install -y jq"
+    pause
+    return
+  fi
+
+  local p folder sa_name sa_id kp
+  p="$(active_profile)"
+  kp="$(key_path)"
+
+  echo "Создание Service Account + Key для профиля: $p"
+  echo "Подсказка: folder-id можно посмотреть командой: yc config list"
+  read -r -p "Folder ID: " folder
+  [[ -n "$folder" ]] || { echo "Пустой Folder ID"; pause; return; }
+
+  read -r -p "Имя service account [watchdog-$p]: " sa_name
+  sa_name="${sa_name:-watchdog-$p}"
+
+  # create SA
+  sa_id="$(yc iam service-account create --name "$sa_name" --folder-id "$folder" --format json | jq -r '.id')"
+  [[ -n "$sa_id" && "$sa_id" != "null" ]] || { echo "Не смог получить SA id"; pause; return; }
+
+  # role on folder
+  yc resource-manager folder add-access-binding "$folder" \
+    --role compute.operator \
+    --subject "serviceAccount:$sa_id" >/dev/null
+
+  # key json
+  yc iam key create --service-account-id "$sa_id" --output "$kp" >/dev/null
+  chmod 600 "$kp" || true
+
+  echo "OK:"
+  echo "  SA: $sa_name ($sa_id)"
+  echo "  Key: $kp"
+  systemctl restart "$SERVICE"
+  pause
+}
+
+act_update_from_github() {
+  if [[ ! -d "$APP_DIR/.git" ]]; then
+    echo "В $APP_DIR нет git-репозитория."
+    pause
+    return
+  fi
+  git -C "$APP_DIR" pull
+  # обновим меню-бинарь из репо
+  install -m 755 "$APP_DIR/bin/vps-watchdog" /usr/local/bin/vps-watchdog
+  systemctl restart "$SERVICE"
+  echo "Обновлено + меню переустановлено + сервис перезапущен."
+  pause
+}
+
+act_uninstall() {
+  echo "Удаление всего (сервис + /opt/vps-watchdog + /usr/local/bin/vps-watchdog)"
+  read -r -p "Точно удалить? (yes/no): " ans
+  if [[ "$ans" != "yes" ]]; then
+    echo "Отмена."
+    pause
+    return
+  fi
+  systemctl stop "$SERVICE" || true
+  systemctl disable "$SERVICE" || true
+  rm -f "/etc/systemd/system/$SERVICE"
+  systemctl daemon-reload || true
+  rm -f "/usr/local/bin/vps-watchdog"
+  rm -rf "$APP_DIR"
+  echo "Удалено."
+}
+
+# ---------- main ----------
+need_root
+mkdir -p "$PROFILES_DIR"
+[[ -f "$ACTIVE_FILE" ]] || echo "default" > "$ACTIVE_FILE"
+apply_active_env || true
 
 while true; do
   clear
-  echo -e "СТАТУС:"
-  echo -e "Активный профиль: $ACTIVE_PROFILE"
-  echo -e "Service Account: $(has_key)"
-  echo -e "Контейнер: $(container_status)"
+  load_env_safe
+
+  prof="$(active_profile)"
+  host="${VM_HOST:-<не задан>}"
+  iid="${INSTANCE_ID:-<не задан>}"
+
+  echo -e "📊 ${c_dim}СТАТУС${c_rst}:"
+  echo -e "Профиль:       ${c_dim}${prof}${c_rst}"
+  echo -e "VM_HOST:       ${host}"
+  echo -e "INSTANCE_ID:   ${iid}"
+  echo -e "SA Key:        $(key_state)"
+  echo -e "Service:       $(service_state)"
+  echo -e "Container:     $(container_state)"
+  echo -e "Ping:          $(ping_state)"
   echo
-  echo "МЕНЮ:"
-  echo "1. Профили"
-  echo "2. Переключить профиль"
-  echo "3. Создать Service Account + Key"
-  echo "4. Логи"
-  echo "5. Статус"
-  echo "6. Тест пинга"
-  echo "0. Выход"
+
+  echo -e "📋 ${c_dim}МЕНЮ${c_rst}:"
+  echo " 1) Service: Start"
+  echo " 2) Service: Stop"
+  echo " 3) Service: Restart"
+  echo " 4) Service: Status"
+  echo " 5) Logs (docker)"
+  echo " 6) Profiles: List"
+  echo " 7) Profiles: Add"
+  echo " 8) Profiles: Switch"
+  echo " 9) Profiles: Edit"
+  echo "10) Profiles: Remove"
+  echo "11) YC: Create Service Account + Key (for active profile)"
+  echo "12) Test ping"
+  echo "13) Update from GitHub (git pull + reinstall menu)"
+  echo "99) Uninstall"
+  echo " 0) Exit"
   echo
-  read -rp "> " choice
+
+  read -r -p "> " choice
 
   case "$choice" in
-    1) ls -1 "$PROFILES_DIR"; read -rp "Enter..." ;;
-    2) nano "$APP_DIR/ACTIVE_PROFILE" ;;
-    3) echo "TODO: yc create sa"; read -rp "Enter..." ;;
-    4) docker logs -f vps-watchdog ;;
-    5) systemctl status vps-watchdog --no-pager; read -rp "Enter..." ;;
-    6) ping -c 3 1.1.1.1; read -rp "Enter..." ;;
-    0) exit 0 ;;
+    1)  act_service_start ;;
+    2)  act_service_stop ;;
+    3)  act_service_restart ;;
+    4)  act_service_status ;;
+    5)  act_logs ;;
+    6)  act_profiles_list ;;
+    7)  act_profiles_add ;;
+    8)  act_profiles_switch ;;
+    9)  act_profiles_edit ;;
+    10) act_profiles_remove ;;
+    11) act_yc_create_sa_key ;;
+    12) act_test_ping ;;
+    13) act_update_from_github ;;
+    99) act_uninstall; exit 0 ;;
+    0)  exit 0 ;;
+    *)  echo "Неизвестный пункт"; pause ;;
   esac
 done
