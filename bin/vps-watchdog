@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="/opt/vps-watchdog"
+PROFILES_DIR="$APP_DIR/profiles"
+ACTIVE_FILE="$APP_DIR/ACTIVE_PROFILE"
+SERVICE="vps-watchdog.service"
+
+need_root(){ [[ "${EUID}" -eq 0 ]] || { echo "Запусти: sudo vps-watchdog"; exit 1; }; }
+have_cmd(){ command -v "$1" >/dev/null 2>&1; }
+dc(){ (cd "$APP_DIR" && docker compose "$@"); }
+
+active_profile(){ cat "$ACTIVE_FILE"; }
+
+apply_active_env(){
+  local p; p="$(active_profile)"
+  cp -f "$PROFILES_DIR/$p.env" "$APP_DIR/.env"
+}
+
+svc_start(){ systemctl start "$SERVICE"; }
+svc_stop(){ systemctl stop "$SERVICE"; }
+svc_restart(){ systemctl restart "$SERVICE"; }
+svc_status(){ systemctl status "$SERVICE" --no-pager; }
+logs(){ dc logs -f --tail=200; }
+
+list_profiles(){
+  ls -1 "$PROFILES_DIR" 2>/dev/null | sed -n 's/\.env$//p' | sort -u
+}
+
+pick_profile(){
+  local items=() p
+  while read -r p; do
+    [[ -n "$p" ]] && items+=("$p" "profile")
+  done < <(list_profiles)
+
+  if [[ ${#items[@]} -eq 0 ]]; then
+    whiptail --msgbox "Профилей нет. Сначала сделай Add profile." 10 60
+    return 1
+  fi
+  whiptail --title "Profiles" --menu "Выбери профиль" 18 70 10 "${items[@]}" 3>&1 1>&2 2>&3
+}
+
+add_profile_manual(){
+  local name host iid interval attempts timeout
+  name="$(whiptail --inputbox "Имя профиля (например ru19)" 10 70 "" 3>&1 1>&2 2>&3)" || return 0
+  host="$(whiptail --inputbox "VM_HOST (IP/DNS кого пингуем)" 10 70 "1.2.3.4" 3>&1 1>&2 2>&3)" || return 0
+  iid="$(whiptail --inputbox "INSTANCE_ID (uuid ВМ в YC)" 10 70 "" 3>&1 1>&2 2>&3)" || return 0
+  interval="$(whiptail --inputbox "CHECK_INTERVAL (сек)" 10 70 "60" 3>&1 1>&2 2>&3)" || return 0
+  attempts="$(whiptail --inputbox "PING_ATTEMPTS" 10 70 "5" 3>&1 1>&2 2>&3)" || return 0
+  timeout="$(whiptail --inputbox "PING_TIMEOUT (сек)" 10 70 "5" 3>&1 1>&2 2>&3)" || return 0
+
+  mkdir -p "$PROFILES_DIR"
+  cat > "$PROFILES_DIR/$name.env" <<EOF
+PROFILE_NAME=$name
+VM_HOST=$host
+INSTANCE_ID=$iid
+CHECK_INTERVAL=$interval
+PING_ATTEMPTS=$attempts
+PING_TIMEOUT=$timeout
+SA_KEY_FILE=/app/profiles/$name.sa-key.json
+EOF
+
+  # ключ положишь позже (или создашь из меню)
+  touch "$PROFILES_DIR/$name.sa-key.json"
+  chmod 600 "$PROFILES_DIR/$name.sa-key.json" || true
+
+  whiptail --msgbox "Профиль $name создан. Теперь: YC -> Create SA+Key (или положи ключ вручную)." 10 70
+}
+
+switch_profile(){
+  local p
+  p="$(pick_profile)" || return 0
+  echo "$p" > "$ACTIVE_FILE"
+  apply_active_env
+  svc_restart
+  whiptail --msgbox "Активный профиль: $p (сервис перезапущен)" 10 60
+}
+
+edit_profile(){
+  local p
+  p="$(pick_profile)" || return 0
+  ${EDITOR:-nano} "$PROFILES_DIR/$p.env"
+  apply_active_env
+  svc_restart
+}
+
+remove_profile(){
+  local p
+  p="$(pick_profile)" || return 0
+  if whiptail --yesno "Удалить профиль $p?" 10 50; then
+    rm -f "$PROFILES_DIR/$p.env" "$PROFILES_DIR/$p.sa-key.json"
+    whiptail --msgbox "Удалено." 8 40
+  fi
+}
+
+test_ping(){
+  local p host
+  p="$(active_profile)"
+  # shellcheck disable=SC1090
+  source "$APP_DIR/.env"
+  host="${VM_HOST:-}"
+  whiptail --msgbox "Пингую $host (активный профиль: $p). Результат в консоли." 10 70
+  ping -c 3 "$host" || true
+  read -r -p "Enter..."
+}
+
+yc_create_sa_key(){
+  if ! have_cmd yc; then
+    whiptail --msgbox "yc CLI не найден. Установи yc и сделай yc init." 10 60
+    return 0
+  fi
+
+  local p folder sa_name sa_id role key_path
+  p="$(active_profile)"
+  folder="$(whiptail --inputbox "Folder ID (папка YC). Можно узнать: yc config list" 10 70 "" 3>&1 1>&2 2>&3)" || return 0
+  sa_name="$(whiptail --inputbox "Имя service account (например watchdog-$p)" 10 70 "watchdog-$p" 3>&1 1>&2 2>&3)" || return 0
+
+  # создать service account
+  sa_id="$(yc iam service-account create --name "$sa_name" --folder-id "$folder" --format json | jq -r '.id')"
+  role="compute.operator"
+
+  # выдать роль на folder
+  yc resource-manager folder add-access-binding "$folder" \
+    --role "$role" \
+    --subject "serviceAccount:$sa_id" >/dev/null
+
+  # создать key json
+  key_path="$PROFILES_DIR/$p.sa-key.json"
+  yc iam key create --service-account-id "$sa_id" --output "$key_path" >/dev/null
+
+  chmod 600 "$key_path" || true
+  whiptail --msgbox "Готово.\nSA: $sa_name ($sa_id)\nРоль: $role\nКлюч: $key_path" 12 70
+
+  svc_restart
+}
+
+update_from_git(){
+  if [[ ! -d "$APP]()]()
