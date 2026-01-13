@@ -5,42 +5,44 @@ APP_DIR="/opt/vps-watchdog"
 PROFILES_DIR="$APP_DIR/profiles"
 ACTIVE_FILE="$APP_DIR/ACTIVE_PROFILE"
 SERVICE="vps-watchdog.service"
-MENU_TITLE="VPS Watchdog (автозапуск ВМ в Yandex Cloud)"
+TITLE="🛡️ VPS Watchdog — автозапуск ВМ (Yandex Cloud)"
 
-# ---------- оформление ----------
-c_ok="\e[32m✔\e[0m"
-c_bad="\e[31m✘\e[0m"
-c_warn="\e[33m!\e[0m"
+# ---------- цвета ----------
+c_ok="\e[32m"
+c_bad="\e[31m"
+c_warn="\e[33m"
+c_info="\e[36m"
 c_dim="\e[2m"
 c_rst="\e[0m"
-c_head="\e[36m"
 
-need_root() {
+ok(){  echo -e "${c_ok}✅ $*${c_rst}"; }
+bad(){ echo -e "${c_bad}❌ $*${c_rst}"; }
+wrn(){ echo -e "${c_warn}⚠️ $*${c_rst}"; }
+inf(){ echo -e "${c_info}ℹ️ $*${c_rst}"; }
+hr(){  echo -e "${c_dim}────────────────────────────────────────────────────────────${c_rst}"; }
+pause(){ read -r -p "Нажми Enter..." _; }
+
+need_root(){
   if [[ "${EUID}" -ne 0 ]]; then
     echo "Запусти с sudo: sudo vps-watchdog"
     exit 1
   fi
 }
 
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
-pause() { read -r -p "Нажми Enter..." _; }
-hr() { echo -e "${c_dim}------------------------------------------------------------${c_rst}"; }
+have_cmd(){ command -v "$1" >/dev/null 2>&1; }
 
-active_profile() {
+active_profile(){
   [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo "default"
 }
-env_path() { echo "$PROFILES_DIR/$(active_profile).env"; }
-key_path() { echo "$PROFILES_DIR/$(active_profile).sa-key.json"; }
+env_path(){ echo "$PROFILES_DIR/$(active_profile).env"; }
+key_path(){ echo "$PROFILES_DIR/$(active_profile).sa-key.json"; }
 
-apply_active_env() {
-  local src
-  src="$(env_path)"
-  if [[ -f "$src" ]]; then
-    cp -f "$src" "$APP_DIR/.env"
-  fi
+apply_active_env(){
+  local src; src="$(env_path)"
+  [[ -f "$src" ]] && cp -f "$src" "$APP_DIR/.env" || true
 }
 
-load_env_safe() {
+load_env_safe(){
   # shellcheck disable=SC1090
   if [[ -f "$APP_DIR/.env" ]]; then
     set +u
@@ -49,61 +51,13 @@ load_env_safe() {
   fi
 }
 
-svc_state() {
-  if systemctl is-enabled "$SERVICE" >/dev/null 2>&1; then
-    if systemctl is-active "$SERVICE" >/dev/null 2>&1; then
-      echo "${c_ok} включен"
-    else
-      echo "${c_warn} включен, но не запущен"
-    fi
-  else
-    echo "${c_bad} выключен"
-  fi
-}
-
-container_state() {
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "vps-watchdog"; then
-    echo "${c_ok} работает"
-  else
-    if docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q '^vps-watchdog '; then
-      echo "${c_warn} есть, но не работает"
-    else
-      echo "${c_bad} не найден"
-    fi
-  fi
-}
-
-key_state() {
-  local kp
-  kp="$(key_path)"
-  if [[ -f "$kp" ]] && [[ -s "$kp" ]]; then
-    echo "${c_ok} есть"
-  else
-    echo "${c_bad} нет"
-  fi
-}
-
-ping_state() {
-  load_env_safe
-  local host="${VM_HOST:-}"
-  if [[ -z "$host" ]]; then
-    echo "${c_bad} не задан VM_HOST"
-    return
-  fi
-  if ping -c 1 -W 1 "$host" >/dev/null 2>&1; then
-    echo "${c_ok} отвечает"
-  else
-    echo "${c_bad} не отвечает"
-  fi
-}
-
-list_profiles() {
+list_profiles(){
   ls -1 "$PROFILES_DIR" 2>/dev/null | sed -n 's/\.env$//p' | sort -u
 }
 
-pick_profile_cli() {
+pick_profile_cli(){
   echo
-  echo "Доступные профили:"
+  inf "Доступные профили:"
   local i=0 p
   while read -r p; do
     [[ -n "$p" ]] || continue
@@ -112,8 +66,7 @@ pick_profile_cli() {
   done < <(list_profiles)
 
   if [[ "$i" -eq 0 ]]; then
-    echo
-    echo "Профилей нет."
+    wrn "Профилей нет."
     return 1
   fi
 
@@ -125,100 +78,176 @@ pick_profile_cli() {
   echo "$p"
 }
 
-edit_file() {
-  local f="$1"
-  echo
-  echo "Открою редактор. Сохрани файл и выйди."
-  echo "Если ты не знаешь nano: Ctrl+O (сохранить), Enter, Ctrl+X (выйти)"
-  pause
-  ${EDITOR:-nano} "$f"
+svc_state(){
+  if systemctl is-enabled "$SERVICE" >/dev/null 2>&1; then
+    if systemctl is-active "$SERVICE" >/dev/null 2>&1; then
+      echo -e "${c_ok}включен${c_rst}"
+    else
+      echo -e "${c_warn}включен, но не запущен${c_rst}"
+    fi
+  else
+    echo -e "${c_bad}выключен${c_rst}"
+  fi
+}
+
+container_state(){
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "vps-watchdog"; then
+    echo -e "${c_ok}работает${c_rst}"
+  else
+    if docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep -q '^vps-watchdog '; then
+      echo -e "${c_warn}есть, но не работает${c_rst}"
+    else
+      echo -e "${c_bad}не найден${c_rst}"
+    fi
+  fi
+}
+
+key_state(){
+  local kp; kp="$(key_path)"
+  if [[ -f "$kp" ]] && [[ -s "$kp" ]]; then
+    echo -e "${c_ok}есть${c_rst}"
+  else
+    echo -e "${c_bad}нет${c_rst}"
+  fi
+}
+
+ping_state(){
+  load_env_safe
+  local host="${VM_HOST:-}"
+  if [[ -z "$host" ]]; then
+    echo -e "${c_bad}не задан VM_HOST${c_rst}"
+    return
+  fi
+  if ping -c 1 -W 1 "$host" >/dev/null 2>&1; then
+    echo -e "${c_ok}отвечает${c_rst}"
+  else
+    echo -e "${c_bad}не отвечает${c_rst}"
+  fi
+}
+
+yc_is_ready(){
+  # есть yc и он авторизован (есть token/folder-id)
+  have_cmd yc || return 1
+  yc config list >/dev/null 2>&1 || return 1
+  # пытаемся понять, есть ли creds
+  if yc config list 2>/dev/null | grep -Eq 'token:|federation-id:|service-account-key:|instance-service-account:'; then
+    return 0
+  fi
+  return 1
 }
 
 # ---------- действия сервиса ----------
-act_service_start()   { systemctl start "$SERVICE"; echo "Готово."; pause; }
-act_service_stop()    { systemctl stop "$SERVICE" || true; echo "Готово."; pause; }
-act_service_restart() { systemctl restart "$SERVICE"; echo "Готово."; pause; }
-act_service_status()  { systemctl status "$SERVICE" --no-pager; pause; }
+service_menu(){
+  while true; do
+    clear
+    echo -e "${c_info}${TITLE}${c_rst}"
+    hr
+    echo "🔧 Управление сервисом"
+    hr
+    echo "1) ▶️ Запустить"
+    echo "2) ⏹ Остановить"
+    echo "3) 🔄 Перезапустить"
+    echo "4) 📋 Показать статус"
+    echo "0) ↩️ Назад"
+    echo
+    read -r -p "> " ch
+    case "$ch" in
+      1) systemctl start "$SERVICE"; ok "Сервис запущен."; pause ;;
+      2) systemctl stop "$SERVICE" || true; ok "Сервис остановлен."; pause ;;
+      3) systemctl restart "$SERVICE"; ok "Сервис перезапущен."; pause ;;
+      4) systemctl status "$SERVICE" --no-pager; pause ;;
+      0) return ;;
+      *) wrn "Неизвестный пункт"; pause ;;
+    esac
+  done
+}
 
-act_logs() {
-  echo "Логи контейнера (Ctrl+C чтобы выйти):"
+logs_menu(){
+  clear
+  echo -e "${c_info}${TITLE}${c_rst}"
+  hr
+  inf "Логи watchdog (что он делает). Выход: Ctrl+C"
+  hr
   docker logs -f --tail=200 vps-watchdog || true
 }
 
-act_test_ping() {
-  load_env_safe
-  echo "Проверка связи (ping)"
+test_ping(){
+  clear
+  echo -e "${c_info}${TITLE}${c_rst}"
   hr
+  inf "Проверка связи (ping)"
+  hr
+  load_env_safe
   echo "VM_HOST: ${VM_HOST:-<не задан>}"
   echo
   if [[ -n "${VM_HOST:-}" ]]; then
     ping -c 3 -W 2 "${VM_HOST}" || true
   else
-    echo "Сначала создай профиль и укажи VM_HOST."
+    wrn "Сначала создай профиль и укажи VM_HOST."
   fi
   hr
   pause
 }
 
-# ---------- меню профилей ----------
-profiles_menu() {
+# ---------- профили ----------
+profiles_menu(){
   while true; do
     clear
-    load_env_safe
-    local prof; prof="$(active_profile)"
-
-    echo -e "${c_head}${MENU_TITLE}${c_rst}"
+    echo -e "${c_info}${TITLE}${c_rst}"
     hr
-    echo -e "Раздел: ${c_head}Профили${c_rst}"
-    echo
-    echo "Профиль — это настройки для одной ВМ:"
-    echo "• VM_HOST — внешний IP (кого пингуем)"
-    echo "• INSTANCE_ID — ID ВМ в Yandex Cloud (кого запускать)"
-    echo
-    echo -e "Текущий активный профиль: ${c_head}${prof}${c_rst}"
+    echo "👤 Профили (настройки для разных ВМ)"
     hr
-    echo "1) Показать список профилей"
-    echo "2) Создать новый профиль (мастер)"
-    echo "3) Переключить активный профиль"
-    echo "4) Редактировать профиль (для продвинутых)"
-    echo "5) Удалить профиль"
-    echo "0) Назад"
+    inf "Что такое профиль?"
+    echo "• VM_HOST — внешний IP ВМ (кого пингуем)"
+    echo "• INSTANCE_ID — ID (UUID) ВМ в Yandex Cloud (кого запускать)"
+    echo
+    echo "Активный профиль: $(active_profile)"
+    hr
+    echo "1) 📄 Показать список профилей"
+    echo "2) ➕ Создать профиль (мастер)"
+    echo "3) 🔁 Переключить активный профиль"
+    echo "4) ✏️ Редактировать профиль (для продвинутых)"
+    echo "5) 🗑 Удалить профиль"
+    echo "0) ↩️ Назад"
     echo
     read -r -p "> " ch
-
     case "$ch" in
       1)
         echo
-        echo "Профили:"
+        inf "Список профилей:"
         list_profiles || true
         pause
         ;;
       2)
         mkdir -p "$PROFILES_DIR"
-        echo
-        echo "Создание профиля (мастер)"
+        clear
+        echo -e "${c_info}${TITLE}${c_rst}"
         hr
-        echo "Подготовь заранее:"
-        echo "• Внешний IP ВМ (VM_HOST)"
-        echo "• INSTANCE_ID ВМ (UUID)"
-        echo "INSTANCE_ID можно получить так:"
-        echo "  yc compute instance list"
+        echo "➕ Мастер создания профиля"
+        hr
+        inf "Подготовь данные заранее:"
+        echo "1) VM_HOST — внешний IP твоей ВМ"
+        echo "2) INSTANCE_ID — UUID ВМ"
+        echo
+        inf "Где взять INSTANCE_ID?"
+        echo "• В терминале:  yc compute instance list"
+        echo "• Или в консоли YC: Compute Cloud → ВМ → ID"
         hr
         echo
-        read -r -p "Имя профиля (например ru-node-19): " name
-        [[ -n "${name:-}" ]] || { echo "Пустое имя."; pause; continue; }
+        read -r -p "Имя профиля (пример: ru-node-19): " name
+        [[ -n "${name:-}" ]] || { bad "Имя пустое."; pause; continue; }
 
         read -r -p "VM_HOST (внешний IP ВМ): " host
-        [[ -n "${host:-}" ]] || { echo "Пустой VM_HOST."; pause; continue; }
+        [[ -n "${host:-}" ]] || { bad "VM_HOST пустой."; pause; continue; }
 
         read -r -p "INSTANCE_ID (UUID ВМ): " iid
-        [[ -n "${iid:-}" ]] || { echo "Пустой INSTANCE_ID."; pause; continue; }
+        [[ -n "${iid:-}" ]] || { bad "INSTANCE_ID пустой."; pause; continue; }
 
         read -r -p "Как часто проверять (сек) [60]: " interval
         interval="${interval:-60}"
         read -r -p "Сколько ping попыток [5]: " attempts
         attempts="${attempts:-5}"
-        read -r -p "Таймаут на попытку (сек) [5]: " timeout
+        read -r -p "Таймаут ping (сек) [5]: " timeout
         timeout="${timeout:-5}"
 
         cat > "$PROFILES_DIR/$name.env" <<EOF
@@ -231,13 +260,11 @@ PING_TIMEOUT=$timeout
 SA_KEY_FILE=/app/profiles/$name.sa-key.json
 EOF
 
-        # ключ создадим в разделе YC
         touch "$PROFILES_DIR/$name.sa-key.json"
         chmod 600 "$PROFILES_DIR/$name.sa-key.json" || true
 
-        echo
-        echo "✅ Профиль '$name' создан."
-        echo "Дальше: зайди в 'Профили -> Переключить' и активируй его."
+        ok "Профиль '$name' создан."
+        inf "Теперь переключись на него (пункт 3)."
         pause
         ;;
       3)
@@ -246,21 +273,22 @@ EOF
         echo "$p" > "$ACTIVE_FILE"
         apply_active_env
         systemctl restart "$SERVICE"
-        echo
-        echo "✅ Активный профиль теперь: $p"
-        echo "Сервис перезапущен."
+        ok "Активный профиль теперь: $p"
         pause
         ;;
       4)
         local p
         p="$(pick_profile_cli)" || { pause; continue; }
-        edit_file "$PROFILES_DIR/$p.env"
+        inf "Открою файл профиля: $p"
+        echo "Подсказка для nano: Ctrl+O → Enter → Ctrl+X"
+        pause
+        ${EDITOR:-nano} "$PROFILES_DIR/$p.env"
         if [[ "$p" == "$(active_profile)" ]]; then
           apply_active_env
           systemctl restart "$SERVICE"
-          echo "Активный профиль обновлён и сервис перезапущен."
+          ok "Активный профиль обновлён и сервис перезапущен."
         else
-          echo "Профиль сохранён."
+          ok "Профиль сохранён."
         fi
         pause
         ;;
@@ -271,51 +299,50 @@ EOF
         read -r -p "Удалить профиль '$p'? (yes/no): " ans
         if [[ "$ans" == "yes" ]]; then
           rm -f "$PROFILES_DIR/$p.env" "$PROFILES_DIR/$p.sa-key.json"
-          echo "Удалено."
+          ok "Профиль удалён."
         else
-          echo "Отмена."
+          inf "Отмена."
         fi
         pause
         ;;
       0) return ;;
-      *) echo "Неизвестный пункт"; pause ;;
+      *) wrn "Неизвестный пункт"; pause ;;
     esac
   done
 }
 
-# ---------- меню YC ----------
-yc_menu() {
+# ---------- YC ----------
+yc_menu(){
   while true; do
     clear
-    local prof; prof="$(active_profile)"
-    echo -e "${c_head}${MENU_TITLE}${c_rst}"
+    echo -e "${c_info}${TITLE}${c_rst}"
     hr
-    echo -e "Раздел: ${c_head}Yandex Cloud (ключи и доступ)${c_rst}"
+    echo "☁️ Yandex Cloud (доступ и ключи)"
+    hr
+    inf "Зачем это нужно?"
+    echo "Чтобы watchdog мог запускать ВМ, ему нужен Service Account и ключ."
     echo
-    echo "Чтобы автозапуск работал, нужен Service Account и ключ."
-    echo "Мы создадим SA и дадим ему роль compute.operator."
-    echo
-    echo -e "Активный профиль: ${c_head}${prof}${c_rst}"
+    echo "Активный профиль: $(active_profile)"
     echo -e "Ключ для профиля: $(key_state)"
     hr
-    echo "1) Проверить yc CLI"
-    echo "2) Показать folder-id (из yc config)"
-    echo "3) Создать Service Account + Key для активного профиля (мастер)"
-    echo "0) Назад"
+    echo "1) ✅ Проверить yc CLI"
+    echo "2) 🔐 Настроить доступ (yc init) — мастер"
+    echo "3) 🆔 Показать folder-id (из yc config)"
+    echo "4) 🔑 Создать Service Account + Key (для активного профиля) — мастер"
+    echo "0) ↩️ Назад"
     echo
     read -r -p "> " ch
-
     case "$ch" in
       1)
         echo
         if have_cmd yc; then
-          echo "✅ yc установлен:"
+          ok "yc установлен:"
           yc --version || true
           echo
-          echo "Проверка авторизации:"
+          inf "Текущая конфигурация:"
           yc config list || true
         else
-          echo "❌ yc не установлен."
+          bad "yc не установлен."
           echo
           echo "Установка:"
           echo "  curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash"
@@ -325,99 +352,218 @@ yc_menu() {
         pause
         ;;
       2)
+        clear
+        echo -e "${c_info}${TITLE}${c_rst}"
+        hr
+        echo "🔐 Мастер настройки доступа (yc init)"
+        hr
+        inf "Что будет происходить?"
+        echo "• yc попросит авторизоваться в браузере"
+        echo "• Он покажет ссылку и/или код"
+        echo "• Ты открываешь ссылку на ПК/телефоне и подтверждаешь"
         echo
-        if have_cmd yc; then
-          yc config list || true
-          echo
-          echo "Найди строку folder-id: это и есть Folder ID."
+        wrn "Важно: делай это на сервере (здесь в терминале)."
+        hr
+        echo
+        if ! have_cmd yc; then
+          bad "yc не установлен."
+          echo "Установи так:"
+          echo "  curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash"
+          echo "  source ~/.bashrc"
+          pause
+          continue
+        fi
+        inf "Запускаю: yc init"
+        echo
+        pause
+        yc init || true
+        echo
+        if yc_is_ready; then
+          ok "Отлично! yc настроен."
         else
-          echo "yc не установлен. Сначала пункт 1."
+          wrn "Похоже, yc всё ещё не настроен. Проверь 'yc config list'."
         fi
         pause
         ;;
       3)
+        echo
+        if have_cmd yc; then
+          yc config list || true
+          echo
+          inf "Найди строку folder-id: это и есть Folder ID."
+        else
+          bad "yc не установлен. Сначала пункт 1."
+        fi
+        pause
+        ;;
+      4)
+        clear
+        echo -e "${c_info}${TITLE}${c_rst}"
+        hr
+        echo "🔑 Мастер создания Service Account + Key"
+        hr
+
         if ! have_cmd yc; then
-          echo "yc не установлен. Сначала пункт 1."
+          bad "yc не установлен. Сначала установи и настрой (пункты 1 и 2)."
           pause
           continue
         fi
         if ! have_cmd jq; then
-          echo "Нужен jq. Установи: apt-get update && apt-get install -y jq"
+          wrn "Нужен jq. Устанавливаю..."
+          apt-get update -y && apt-get install -y jq
+        fi
+        if ! yc_is_ready; then
+          bad "yc не авторизован (нет токена/учётки)."
+          inf "Сделай: меню → Yandex Cloud → 'Настроить доступ (yc init)'."
           pause
           continue
         fi
 
+        local prof folder sa_name sa_id kp
+        prof="$(active_profile)"
+        kp="$(key_path)"
+
+        inf "Профиль: $prof"
         echo
-        echo "Мастер создания Service Account + Key"
-        hr
-        echo "Что нужно:"
-        echo "• Folder ID (папка в YC) — его видно в 'yc config list'"
-        echo "• yc должен быть настроен (yc init)"
-        hr
+        inf "Где взять Folder ID?"
+        echo "• В меню: пункт 3 (показать folder-id)"
+        echo "• Или командой: yc config list"
         echo
         read -r -p "Folder ID (пример: b1gxxxx): " folder
-        [[ -n "${folder:-}" ]] || { echo "Пустой Folder ID"; pause; continue; }
+        [[ -n "${folder:-}" ]] || { bad "Folder ID пустой."; pause; continue; }
 
         read -r -p "Имя service account [watchdog-$prof]: " sa_name
         sa_name="${sa_name:-watchdog-$prof}"
 
-        local sa_id kp
-        kp="$(key_path)"
-
         echo
-        echo "Создаю Service Account..."
-        sa_id="$(yc iam service-account create --name "$sa_name" --folder-id "$folder" --format json | jq -r '.id')"
+        inf "Создаю Service Account..."
+        sa_id="$(yc iam service-account create --name "$sa_name" --folder-id "$folder" --format json | jq -r '.id')" || true
 
-        if [[ -z "$sa_id" || "$sa_id" == "null" ]]; then
-          echo "Не удалось получить id service account."
+        if [[ -z "${sa_id:-}" || "${sa_id:-}" == "null" ]]; then
+          bad "Не удалось создать service account. Проверь права/Folder ID."
           pause
           continue
         fi
 
-        echo "Выдаю роль compute.operator на папку..."
+        inf "Выдаю роль compute.operator на папку..."
         yc resource-manager folder add-access-binding "$folder" \
           --role compute.operator \
           --subject "serviceAccount:$sa_id" >/dev/null
 
-        echo "Создаю ключ и сохраняю в: $kp"
+        inf "Создаю ключ и сохраняю в: $kp"
         yc iam key create --service-account-id "$sa_id" --output "$kp" >/dev/null
         chmod 600 "$kp" || true
 
-        echo
-        echo "✅ Готово!"
+        ok "Готово!"
         echo "Service Account: $sa_name"
         echo "ID: $sa_id"
         echo "Ключ: $kp"
         echo
-        echo "Перезапускаю сервис..."
+        inf "Перезапускаю сервис..."
         systemctl restart "$SERVICE"
         pause
         ;;
       0) return ;;
-      *) echo "Неизвестный пункт"; pause ;;
+      *) wrn "Неизвестный пункт"; pause ;;
+    esac
+  done
+}
+
+# ---------- мастер быстрой настройки ----------
+wizard_quick_setup(){
+  while true; do
+    clear
+    echo -e "${c_info}${TITLE}${c_rst}"
+    hr
+    echo "🪄 Мастер быстрой настройки (для новичков)"
+    hr
+    echo "Я проведу по шагам и скажу, что делать."
+    echo
+    echo "1) Проверим yc"
+    echo "2) Запустим yc init (авторизация)"
+    echo "3) Создадим профиль"
+    echo "4) Создадим Service Account + Key"
+    echo "5) Проверим ping и логи"
+    hr
+    echo "1) Поехали!"
+    echo "0) Назад"
+    echo
+    read -r -p "> " ch
+    case "$ch" in
+      1)
+        # 1) yc installed?
+        if ! have_cmd yc; then
+          wrn "yc не найден."
+          echo "Установи yc (вставь по очереди):"
+          echo "  curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash"
+          echo "  source ~/.bashrc"
+          echo
+          pause
+          continue
+        fi
+        ok "yc установлен."
+
+        # 2) yc init
+        if ! yc_is_ready; then
+          wrn "yc не настроен. Сейчас запустим yc init."
+          pause
+          yc init || true
+        fi
+        if ! yc_is_ready; then
+          bad "yc всё ещё не настроен. Открой меню Yandex Cloud → yc init и попробуй снова."
+          pause
+          continue
+        fi
+        ok "yc настроен."
+
+        # 3) create profile
+        wrn "Сейчас создадим профиль. Подготовь VM_HOST и INSTANCE_ID."
+        inf "INSTANCE_ID можно получить: yc compute instance list"
+        pause
+        profiles_menu  # пользователь создаст и переключит
+
+        # убедимся, что активный профиль не default
+        if [[ "$(active_profile)" == "default" ]]; then
+          wrn "Ты всё ещё на профиле default. Переключись на свой профиль (Профили → Переключить)."
+          pause
+          continue
+        fi
+
+        # 4) create SA+Key
+        wrn "Теперь создадим Service Account + Key для активного профиля."
+        pause
+        yc_menu
+
+        # 5) check
+        ok "Проверим логи."
+        pause
+        logs_menu
+        ;;
+      0) return ;;
+      *) wrn "Неизвестный пункт"; pause ;;
     esac
   done
 }
 
 # ---------- обновление ----------
-act_update_from_github() {
+update_from_github(){
   if [[ ! -d "$APP_DIR/.git" ]]; then
-    echo "В $APP_DIR нет git-репозитория."
+    bad "В $APP_DIR нет git-репозитория."
     pause
     return
   fi
   git -C "$APP_DIR" pull
   install -m 755 "$APP_DIR/bin/vps-watchdog" /usr/local/bin/vps-watchdog
   systemctl restart "$SERVICE"
-  echo "✅ Обновлено из GitHub, меню переустановлено, сервис перезапущен."
+  ok "Обновлено из GitHub, меню переустановлено, сервис перезапущен."
   pause
 }
 
-act_uninstall() {
-  echo "Удаление всего (сервис + файлы)."
+uninstall_all(){
+  wrn "Удаление всего (сервис + файлы)."
   read -r -p "Точно удалить? (yes/no): " ans
   if [[ "$ans" != "yes" ]]; then
-    echo "Отмена."
+    inf "Отмена."
     pause
     return
   fi
@@ -427,11 +573,11 @@ act_uninstall() {
   systemctl daemon-reload || true
   rm -f "/usr/local/bin/vps-watchdog"
   rm -rf "$APP_DIR"
-  echo "Удалено."
+  ok "Удалено."
 }
 
 # ---------- главное меню ----------
-main_menu() {
+main_menu(){
   while true; do
     clear
     load_env_safe
@@ -440,59 +586,40 @@ main_menu() {
     host="${VM_HOST:-<не задан>}"
     iid="${INSTANCE_ID:-<не задан>}"
 
-    echo -e "${c_head}${MENU_TITLE}${c_rst}"
+    echo -e "${c_info}${TITLE}${c_rst}"
     hr
-    echo -e "${c_dim}СТАТУС:${c_rst}"
-    echo -e "Профиль:      ${c_head}${prof}${c_rst}"
-    echo -e "VM_HOST:      ${host}"
-    echo -e "INSTANCE_ID:  ${iid}"
-    echo -e "Ключ доступа: $(key_state)  ${c_dim}(нужен, чтобы запускать ВМ)${c_rst}"
-    echo -e "Сервис:       $(svc_state)"
-    echo -e "Контейнер:    $(container_state)"
-    echo -e "Связь (ping): $(ping_state)"
+    echo -e "${c_dim}📊 СТАТУС:${c_rst}"
+    echo -e "👤 Профиль:      ${c_info}${prof}${c_rst}"
+    echo -e "🌐 VM_HOST:      ${host}"
+    echo -e "🆔 INSTANCE_ID:  ${iid}"
+    echo -e "🔑 Ключ доступа: $(key_state)  ${c_dim}(нужен для запуска ВМ)${c_rst}"
+    echo -e "🧩 Сервис:       $(svc_state)"
+    echo -e "🐳 Контейнер:    $(container_state)"
+    echo -e "📡 Связь (ping): $(ping_state)"
     hr
-    echo -e "${c_dim}МЕНЮ:${c_rst}"
-    echo "1) Управление сервисом (start/stop/status)"
-    echo "2) Профили (создать/переключить/удалить)"
-    echo "3) Yandex Cloud (создать Service Account + ключ)"
-    echo "4) Логи (что делает watchdog)"
-    echo "5) Проверить ping"
-    echo "6) Обновиться из GitHub"
-    echo "99) Удалить программу"
-    echo "0) Выход"
+    echo -e "${c_dim}📋 МЕНЮ:${c_rst}"
+    echo "1) 🪄 Быстрая настройка (мастер для новичков)"
+    echo "2) 🔧 Сервис (start/stop/status)"
+    echo "3) 👤 Профили (создать/переключить)"
+    echo "4) ☁️ Yandex Cloud (yc init, ключи)"
+    echo "5) 📜 Логи watchdog"
+    echo "6) 📡 Проверить ping"
+    echo "7) ⬇️ Обновиться из GitHub"
+    echo "99) 🗑 Удалить программу"
+    echo "0) 🚪 Выход"
     echo
     read -r -p "> " ch
-
     case "$ch" in
-      1)
-        clear
-        echo -e "${c_head}${MENU_TITLE}${c_rst}"
-        hr
-        echo "Управление сервисом:"
-        echo "1) Запустить"
-        echo "2) Остановить"
-        echo "3) Перезапустить"
-        echo "4) Статус"
-        echo "0) Назад"
-        echo
-        read -r -p "> " s
-        case "$s" in
-          1) act_service_start ;;
-          2) act_service_stop ;;
-          3) act_service_restart ;;
-          4) act_service_status ;;
-          0) ;;
-          *) echo "Неизвестно"; pause ;;
-        esac
-        ;;
-      2) profiles_menu ;;
-      3) yc_menu ;;
-      4) act_logs ;;
-      5) act_test_ping ;;
-      6) act_update_from_github ;;
-      99) act_uninstall; exit 0 ;;
+      1) wizard_quick_setup ;;
+      2) service_menu ;;
+      3) profiles_menu ;;
+      4) yc_menu ;;
+      5) logs_menu ;;
+      6) test_ping ;;
+      7) update_from_github ;;
+      99) uninstall_all; exit 0 ;;
       0) exit 0 ;;
-      *) echo "Неизвестный пункт"; pause ;;
+      *) wrn "Неизвестный пункт"; pause ;;
     esac
   done
 }
