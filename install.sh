@@ -5,94 +5,118 @@ APP_DIR="/opt/vps-watchdog"
 BIN_PATH="/usr/local/bin/vps-watchdog"
 SERVICE_PATH="/etc/systemd/system/vps-watchdog.service"
 
-# ВАЖНО: это твой репозиторий
 REPO_URL="https://github.com/Mastachok/ya-vps-autostart.git"
 REPO_BRANCH="main"
 
-need_root() { [[ "${EUID}" -eq 0 ]] || { echo "Запусти: sudo bash install.sh"; exit 1; }; }
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
+say() { echo -e "✅ $*"; }
+warn() { echo -e "⚠️  $*"; }
+err() { echo -e "❌ $*" >&2; }
+need_root() { [[ "${EUID}" -eq 0 ]] || { err "Запусти через sudo"; exit 1; }; }
 
-install_deps() {
-  apt-get update -y
-  apt-get install -y ca-certificates curl git jq whiptail
-}
+need_root
 
-check_docker() {
-  if ! have_cmd docker; then
-    echo "Docker не найден. Установи Docker + Compose v2."
-    exit 1
-  fi
-  if ! docker compose version >/dev/null 2>&1; then
-    echo "docker compose (v2) не найден. Установи Docker Compose v2."
-    exit 1
-  fi
-}
+# 1) Базовые пакеты
+say "Устанавливаю зависимости..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  ca-certificates curl git jq whiptail
 
-clone_or_update_repo() {
-  if [[ -d "$APP_DIR/.git" ]]; then
-    echo "Repo уже есть, обновляю..."
-    git -C "$APP_DIR" fetch --all -q
-    git -C "$APP_DIR" checkout -q "$REPO_BRANCH"
-    git -C "$APP_DIR" pull -q
-  else
-    echo "Клонирую $REPO_URL -> $APP_DIR"
-    rm -rf "$APP_DIR"
-    git clone -q --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
-  fi
-}
+# 2) Docker (если нет)
+if ! command -v docker >/dev/null 2>&1; then
+  warn "Docker не найден — устанавливаю Docker..."
+  curl -fsSL https://get.docker.com | sh
+else
+  say "Docker уже установлен."
+fi
 
-install_menu_binary() {
-  install -m 0755 "$APP_DIR/bin/vps-watchdog" "$BIN_PATH"
-}
+# 3) Проверка docker compose
+if ! docker compose version >/dev/null 2>&1; then
+  warn "docker compose не найден. На Ubuntu обычно ставится пакетом docker-compose-plugin."
+  warn "Пробую установить docker-compose-plugin..."
+  apt-get install -y docker-compose-plugin || true
+fi
 
-install_systemd() {
-  install -m 0644 "$APP_DIR/templates/systemd.service.tpl" "$SERVICE_PATH"
-  systemctl daemon-reload
-  systemctl enable vps-watchdog.service
-}
+if ! docker compose version >/dev/null 2>&1; then
+  err "Не удалось установить docker compose. Установи вручную docker-compose-plugin и повтори."
+  exit 1
+fi
 
-first_bootstrap() {
-  mkdir -p "$APP_DIR/profiles"
-  if [[ ! -f "$APP_DIR/ACTIVE_PROFILE" ]]; then
-    echo "default" > "$APP_DIR/ACTIVE_PROFILE"
-  fi
-  # если профиля default нет — создадим заглушку (потом в меню сделаешь нормальный)
-  if [[ ! -f "$APP_DIR/profiles/default.env" ]]; then
-    cat > "$APP_DIR/profiles/default.env" <<'EOF'
+# 4) Клонируем/обновляем репо
+if [[ -d "$APP_DIR/.git" ]]; then
+  say "Обновляю репозиторий в $APP_DIR..."
+  git -C "$APP_DIR" fetch --all
+  git -C "$APP_DIR" checkout "$REPO_BRANCH"
+  git -C "$APP_DIR" pull
+else
+  say "Клонирую репозиторий в $APP_DIR..."
+  rm -rf "$APP_DIR"
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
+fi
+
+# 5) Ставим бинарь меню
+say "Устанавливаю команду меню: vps-watchdog"
+install -m 755 "$APP_DIR/bin/vps-watchdog" "$BIN_PATH"
+
+# 6) Профили: создаём пустой default (без мусорных значений)
+mkdir -p "$APP_DIR/profiles"
+
+if [[ ! -f "$APP_DIR/ACTIVE_PROFILE" ]]; then
+  echo "default" > "$APP_DIR/ACTIVE_PROFILE"
+fi
+
+DEFAULT_ENV="$APP_DIR/profiles/default.env"
+DEFAULT_KEY="$APP_DIR/profiles/default.sa-key.json"
+
+if [[ ! -f "$DEFAULT_ENV" ]]; then
+  cat > "$DEFAULT_ENV" <<'EOF'
+# ✅ Профиль по умолчанию (заполни через меню: Профили → Создать)
+# VM_HOST — внешний IP ВМ (кого пингуем)
+# INSTANCE_ID — UUID ВМ в Yandex Cloud (кого запускать)
 PROFILE_NAME=default
-VM_HOST=1.1.1.1
-INSTANCE_ID=replace-me
+VM_HOST=
+INSTANCE_ID=
 CHECK_INTERVAL=60
 PING_ATTEMPTS=5
 PING_TIMEOUT=5
 SA_KEY_FILE=/app/profiles/default.sa-key.json
 EOF
-    touch "$APP_DIR/profiles/default.sa-key.json"
-    chmod 600 "$APP_DIR/profiles/default.sa-key.json" || true
-  fi
+fi
 
-  # активный .env = копия из active profile
-  PROFILE="$(cat "$APP_DIR/ACTIVE_PROFILE")"
-  cp -f "$APP_DIR/profiles/${PROFILE}.env" "$APP_DIR/.env"
-}
+# пустой файл ключа (появится после создания SA+Key)
+if [[ ! -f "$DEFAULT_KEY" ]]; then
+  : > "$DEFAULT_KEY"
+  chmod 600 "$DEFAULT_KEY" || true
+fi
 
-start_service() {
-  systemctl start vps-watchdog.service
-}
+# применим env для активного профиля
+cp -f "$DEFAULT_ENV" "$APP_DIR/.env"
 
-main() {
-  need_root
-  install_deps
-  check_docker
-  clone_or_update_repo
-  first_bootstrap
-  install_menu_binary
-  install_systemd
-  start_service
+# 7) systemd service
+say "Создаю systemd сервис..."
+cat > "$SERVICE_PATH" <<EOF
+[Unit]
+Description=VPS Watchdog (Yandex Cloud)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
 
-  echo "✅ Установлено."
-  echo "Меню: sudo vps-watchdog"
-  echo "Статус: systemctl status vps-watchdog --no-pager"
-}
+[Service]
+Type=oneshot
+WorkingDirectory=$APP_DIR
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+RemainAfterExit=yes
 
-main "$@"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable vps-watchdog.service
+systemctl restart vps-watchdog.service
+
+say "Установлено!"
+echo
+echo "👉 Запусти мастер настройки:"
+echo "   sudo vps-watchdog"
