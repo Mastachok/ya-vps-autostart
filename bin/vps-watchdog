@@ -1,213 +1,45 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 APP_DIR="/opt/vps-watchdog"
 PROFILES_DIR="$APP_DIR/profiles"
-ACTIVE_FILE="$APP_DIR/ACTIVE_PROFILE"
-SERVICE="vps-watchdog.service"
+ACTIVE_PROFILE="$(cat $APP_DIR/ACTIVE_PROFILE 2>/dev/null || echo default)"
 
-need_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    echo "Запусти с sudo: sudo vps-watchdog"
-    exit 1
-  fi
+color_ok="\e[32m✔\e[0m"
+color_bad="\e[31m✘\e[0m"
+
+has_key() {
+  [[ -f "$PROFILES_DIR/$ACTIVE_PROFILE.sa-key.json" ]] && echo "$color_ok" || echo "$color_bad"
 }
 
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-dc() { (cd "$APP_DIR" && docker compose "$@"); }
-
-active_profile() {
-  if [[ -f "$ACTIVE_FILE" ]]; then
-    cat "$ACTIVE_FILE"
-  else
-    echo "default"
-  fi
+container_status() {
+  docker ps --format '{{.Names}}' | grep -q vps-watchdog && echo "$color_ok" || echo "$color_bad"
 }
 
-apply_active_env() {
-  local p
-  p="$(active_profile)"
-  cp -f "$PROFILES_DIR/$p.env" "$APP_DIR/.env"
-}
+while true; do
+  clear
+  echo -e "СТАТУС:"
+  echo -e "Активный профиль: $ACTIVE_PROFILE"
+  echo -e "Service Account: $(has_key)"
+  echo -e "Контейнер: $(container_status)"
+  echo
+  echo "МЕНЮ:"
+  echo "1. Профили"
+  echo "2. Переключить профиль"
+  echo "3. Создать Service Account + Key"
+  echo "4. Логи"
+  echo "5. Статус"
+  echo "6. Тест пинга"
+  echo "0. Выход"
+  echo
+  read -rp "> " choice
 
-svc_start()   { systemctl start "$SERVICE"; }
-svc_stop()    { systemctl stop "$SERVICE"; }
-svc_restart() { systemctl restart "$SERVICE"; }
-svc_status()  { systemctl status "$SERVICE" --no-pager; }
-svc_logs()    { dc logs -f --tail=200; }
-
-list_profiles() {
-  ls -1 "$PROFILES_DIR" 2>/dev/null | sed -n 's/\.env$//p' | sort -u
-}
-
-pick_profile() {
-  local items=() p
-  while read -r p; do
-    [[ -n "$p" ]] && items+=("$p" "")
-  done < <(list_profiles)
-
-  if [[ ${#items[@]} -eq 0 ]]; then
-    whiptail --msgbox "Профилей нет. Сначала добавь профиль." 10 60
-    return 1
-  fi
-
-  whiptail --title "Profiles" \
-    --menu "Выбери профиль" 18 70 10 \
-    "${items[@]}" 3>&1 1>&2 2>&3
-}
-
-add_profile_manual() {
-  local name host iid interval attempts timeout
-
-  name="$(whiptail --inputbox "Имя профиля (например ru-node)" 10 70 "" 3>&1 1>&2 2>&3)" || return
-  host="$(whiptail --inputbox "VM_HOST (IP/DNS)" 10 70 "1.1.1.1" 3>&1 1>&2 2>&3)" || return
-  iid="$(whiptail --inputbox "INSTANCE_ID (UUID ВМ в YC)" 10 70 "" 3>&1 1>&2 2>&3)" || return
-  interval="$(whiptail --inputbox "CHECK_INTERVAL (сек)" 10 70 "60" 3>&1 1>&2 2>&3)" || return
-  attempts="$(whiptail --inputbox "PING_ATTEMPTS" 10 70 "5" 3>&1 1>&2 2>&3)" || return
-  timeout="$(whiptail --inputbox "PING_TIMEOUT (сек)" 10 70 "5" 3>&1 1>&2 2>&3)" || return
-
-  mkdir -p "$PROFILES_DIR"
-
-  cat > "$PROFILES_DIR/$name.env" <<EOF
-PROFILE_NAME=$name
-VM_HOST=$host
-INSTANCE_ID=$iid
-CHECK_INTERVAL=$interval
-PING_ATTEMPTS=$attempts
-PING_TIMEOUT=$timeout
-SA_KEY_FILE=/app/profiles/$name.sa-key.json
-EOF
-
-  touch "$PROFILES_DIR/$name.sa-key.json"
-  chmod 600 "$PROFILES_DIR/$name.sa-key.json" || true
-
-  whiptail --msgbox "Профиль '$name' создан.\nТеперь создай SA+Key через меню YC." 10 70
-}
-
-switch_profile() {
-  local p
-  p="$(pick_profile)" || return
-  echo "$p" > "$ACTIVE_FILE"
-  apply_active_env
-  svc_restart
-  whiptail --msgbox "Активный профиль: $p\nСервис перезапущен." 10 60
-}
-
-edit_profile() {
-  local p
-  p="$(pick_profile)" || return
-  ${EDITOR:-nano} "$PROFILES_DIR/$p.env"
-  apply_active_env
-  svc_restart
-}
-
-remove_profile() {
-  local p
-  p="$(pick_profile)" || return
-  if whiptail --yesno "Удалить профиль '$p'?" 10 50; then
-    rm -f "$PROFILES_DIR/$p.env" "$PROFILES_DIR/$p.sa-key.json"
-    whiptail --msgbox "Профиль удалён." 8 40
-  fi
-}
-
-test_ping() {
-  # shellcheck disable=SC1090
-  source "$APP_DIR/.env" || true
-  whiptail --msgbox "Пингую ${VM_HOST:-<не задан>}\nРезультат смотри в консоли." 10 70
-  ping -c 3 "${VM_HOST:-}" || true
-  read -r -p "Enter..."
-}
-
-yc_create_sa_key() {
-  if ! have_cmd yc; then
-    whiptail --msgbox "yc CLI не установлен.\nУстанови yc и выполни 'yc init'." 10 60
-    return
-  fi
-  if ! have_cmd jq; then
-    whiptail --msgbox "Не найден jq.\nУстанови: apt-get install -y jq" 10 60
-    return
-  fi
-
-  local p folder sa_name sa_id key_path
-  p="$(active_profile)"
-
-  folder="$(whiptail --inputbox "Folder ID (yc config list)" 10 70 "" 3>&1 1>&2 2>&3)" || return
-  sa_name="$(whiptail --inputbox "Имя service account" 10 70 "watchdog-$p" 3>&1 1>&2 2>&3)" || return
-
-  sa_id="$(yc iam service-account create --name "$sa_name" --folder-id "$folder" --format json | jq -r '.id')"
-
-  yc resource-manager folder add-access-binding "$folder" \
-    --role compute.operator \
-    --subject "serviceAccount:$sa_id" >/dev/null
-
-  key_path="$PROFILES_DIR/$p.sa-key.json"
-  yc iam key create --service-account-id "$sa_id" --output "$key_path" >/dev/null
-  chmod 600 "$key_path" || true
-
-  whiptail --msgbox "Service Account создан.\nКлюч: $key_path" 10 70
-  svc_restart
-}
-
-update_from_git() {
-  git -C "$APP_DIR" pull
-  svc_restart
-  whiptail --msgbox "Обновлено из GitHub и перезапущено." 8 50
-}
-
-uninstall_all() {
-  if whiptail --yesno "Удалить ВСЁ (сервис + файлы)?" 10 60; then
-    systemctl stop "$SERVICE" || true
-    systemctl disable "$SERVICE" || true
-    rm -f "/etc/systemd/system/$SERVICE"
-    systemctl daemon-reload || true
-    rm -f "/usr/local/bin/vps-watchdog"
-    rm -rf "$APP_DIR"
-    echo "Удалено."
-  fi
-}
-
-main_menu() {
-  while true; do
-    local choice
-    choice="$(whiptail --title "VPS Watchdog" \
-      --menu "Активный профиль: $(active_profile)" 20 78 12 \
-      "1"  "Service: Start" \
-      "2"  "Service: Stop" \
-      "3"  "Service: Restart" \
-      "4"  "Service: Status" \
-      "5"  "Logs" \
-      "6"  "Profiles: Add" \
-      "7"  "Profiles: Switch" \
-      "8"  "Profiles: Edit" \
-      "9"  "Profiles: Remove" \
-      "10" "YC: Create Service Account + Key" \
-      "11" "Test ping" \
-      "12" "Update from GitHub" \
-      "99" "Uninstall" \
-      "0"  "Exit" \
-      3>&1 1>&2 2>&3)" || exit 0
-
-    case "$choice" in
-      1) svc_start ;;
-      2) svc_stop ;;
-      3) svc_restart ;;
-      4) svc_status; read -r -p "Enter..." ;;
-      5) svc_logs ;;
-      6) add_profile_manual ;;
-      7) switch_profile ;;
-      8) edit_profile ;;
-      9) remove_profile ;;
-      10) yc_create_sa_key ;;
-      11) test_ping ;;
-      12) update_from_git ;;
-      99) uninstall_all; exit 0 ;;
-      0) exit 0 ;;
-    esac
-  done
-}
-
-need_root
-mkdir -p "$PROFILES_DIR"
-[[ -f "$ACTIVE_FILE" ]] || echo "default" > "$ACTIVE_FILE"
-main_menu
+  case "$choice" in
+    1) ls -1 "$PROFILES_DIR"; read -rp "Enter..." ;;
+    2) nano "$APP_DIR/ACTIVE_PROFILE" ;;
+    3) echo "TODO: yc create sa"; read -rp "Enter..." ;;
+    4) docker logs -f vps-watchdog ;;
+    5) systemctl status vps-watchdog --no-pager; read -rp "Enter..." ;;
+    6) ping -c 3 1.1.1.1; read -rp "Enter..." ;;
+    0) exit 0 ;;
+  esac
+done
