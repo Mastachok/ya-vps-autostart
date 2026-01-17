@@ -446,26 +446,29 @@ add_profile_oauth() {
     profile_id=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 8 | head -n 1)
     profile_file="$PROFILES_DIR/${profile_id}.json"
     
+    
+' "$profile_id" "$vm_name" "$vm_host" "$instance_id" "$folder_id" "$(date -Iseconds)" "$(date -Iseconds)" > "$profile_file"
+EOF
+```bash
+    # Создаём профиль
     cat > "$profile_file" <<EOF
-# Создаём профиль через printf вместо heredoc
-    printf '{
-  "id": "%s",
-  "name": "%s",
-  "vm_host": "%s",
-  "instance_id": "%s",
-  "folder_id": "%s",
+{
+  "id": "$profile_id",
+  "name": "$vm_name",
+  "vm_host": "$vm_host",
+  "instance_id": "$instance_id",
+  "folder_id": "$folder_id",
   "enabled": true,
   "check_interval": 60,
   "ping_count": 3,
   "ping_timeout": 5,
   "cooldown_minutes": 5,
   "max_start_attempts": 3,
-  "created_at": "%s",
-  "updated_at": "%s"
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)"
 }
-' "$profile_id" "$vm_name" "$vm_host" "$instance_id" "$folder_id" "$(date -Iseconds)" "$(date -Iseconds)" > "$profile_file"
 EOF
-    
+```
     success "Профиль создан!"
     echo
     
