@@ -1,282 +1,295 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Цвета для красивого вывода
-RED='\033[0;31m'
+# ═══════════════════════════════════════════════════════════════════
+# VPS Watchdog - Автоматический сборщик данных (OAuth only)
+# ═══════════════════════════════════════════════════════════════════
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
+RED='\033[0;31m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
 BOLD='\033[1m'
+NC='\033[0m'
 
-# Функция для красивого заголовка
-print_header() {
-    echo ""
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}  🔍 VPS Watchdog - Автоматический сбор данных для настройки${NC}"
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-}
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}${CYAN}  🔍 VPS Watchdog - Автоматический сбор данных${NC}"
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo
 
-# Функция для проверки ошибок
-check_error() {
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Ошибка: $1${NC}"
+# ═══════════════════════════════════════════════════════════════════
+# Проверка зависимостей
+# ═══════════════════════════════════════════════════════════════════
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo -e "${RED}❌ curl не установлен${NC}"
+    exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  jq не установлен, пытаюсь установить...${NC}"
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq jq
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y jq
+    else
+        echo -e "${RED}❌ Установи jq вручную: sudo apt-get install jq${NC}"
         exit 1
+    fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# OAuth авторизация
+# ═══════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}${CYAN}  🌐 АВТОРИЗАЦИЯ ЧЕРЕЗ БРАУЗЕР${NC}"
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo
+
+echo -e "${YELLOW}📋 ИНСТРУКЦИЯ:${NC}"
+echo
+echo "1️⃣  Открой эту ссылку в браузере:"
+echo
+echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+echo
+echo "2️⃣  Авторизуйся в Yandex"
+echo "3️⃣  Разреши доступ к Yandex Cloud"
+echo "4️⃣  Скопируй токен который покажется на странице"
+echo
+echo -e "${YELLOW}⚠️  Токен выглядит примерно так:${NC}"
+echo "   y0_AgAAAABabcdefghijklmnopqrstuvwxyz1234567890"
+echo
+
+read -r -p "Вставь токен сюда: " OAUTH_TOKEN
+
+if [[ -z "$OAUTH_TOKEN" ]]; then
+    echo -e "${RED}❌ Токен пустой${NC}"
+    exit 1
+fi
+
+echo
+echo -e "${GREEN}✅ Токен получен${NC}"
+
+# Функция для API запросов с OAuth
+yc_api() {
+    local method="$1"
+    local url="$2"
+    local data="${3:-}"
+    
+    if [[ -n "$data" ]]; then
+        curl -s -X "$method" \
+            -H "Authorization: Bearer $OAUTH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$data" \
+            "$url"
+    else
+        curl -s -X "$method" \
+            -H "Authorization: Bearer $OAUTH_TOKEN" \
+            "$url"
     fi
 }
 
-# Функция для проверки команды
-check_command() {
-    if ! command -v $1 &> /dev/null; then
-        echo -e "${RED}❌ Команда '$1' не найдена. Установи её сначала.${NC}"
-        exit 1
-    fi
-}
+# Получаем список папок
+echo
+echo -e "${CYAN}📁 Получаю список папок (folders)...${NC}"
 
-print_header
+FOLDERS=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders" | jq -r '.folders // []')
+FOLDER_COUNT=$(echo "$FOLDERS" | jq length)
 
-# Проверка необходимых команд
-check_command yc
-check_command jq
-
-# Проверка что yc настроен
-echo -e "${BLUE}🔧 Проверяю yc CLI настроен...${NC}"
-if ! yc config profile list &> /dev/null; then
-    echo -e "${RED}❌ yc CLI не настроен. Запусти 'yc init' сначала${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ yc CLI настроен${NC}"
-
-# Получение Folder ID
-FOLDER_ID=$(yc config get folder-id 2>/dev/null)
-if [ -z "$FOLDER_ID" ]; then
-    echo -e "${RED}❌ Folder ID не найден${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ Folder ID: ${FOLDER_ID}${NC}"
-echo ""
-
-# Получение списка VM
-echo -e "${BLUE}🖥️  Получаю список виртуальных машин...${NC}"
-VM_LIST=$(yc compute instance list --folder-id "$FOLDER_ID" --format json 2>&1)
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Ошибка получения списка VM:${NC}"
-    echo "$VM_LIST"
+if [[ "$FOLDER_COUNT" -eq 0 ]]; then
+    echo -e "${RED}❌ Папки не найдены${NC}"
+    echo "Возможно у токена нет прав или ты не авторизован"
     exit 1
 fi
 
-VM_COUNT=$(echo "$VM_LIST" | jq '. | length')
-if [ "$VM_COUNT" -eq 0 ]; then
-    echo -e "${RED}❌ Виртуальные машины не найдены${NC}"
-    exit 1
-fi
+echo -e "${GREEN}✅ Найдено папок: $FOLDER_COUNT${NC}"
+echo
 
-echo -e "${GREEN}✅ Найдено VM: ${VM_COUNT}${NC}"
-echo ""
-echo -e "${CYAN}┌────────────────────────────────────────────────────────────────┐${NC}"
-echo -e "${CYAN}│${NC}${BOLD}                     ДОСТУПНЫЕ ВИРТУАЛЬНЫЕ МАШИНЫ                ${NC}${CYAN}│${NC}"
-echo -e "${CYAN}└────────────────────────────────────────────────────────────────┘${NC}"
-echo ""
+# Показываем список папок
+echo "┌────────────────────────────────────────────────────────────────┐"
+echo "│                        ДОСТУПНЫЕ ПАПКИ                          │"
+echo "└────────────────────────────────────────────────────────────────┘"
+echo
 
-# Вывод списка VM
 i=1
-declare -A VM_IDS
-declare -A VM_IPS
-declare -A VM_NAMES
-
-while IFS= read -r vm; do
-    vm_id=$(echo "$vm" | jq -r '.id')
-    vm_name=$(echo "$vm" | jq -r '.name')
-    vm_status=$(echo "$vm" | jq -r '.status')
-    vm_zone=$(echo "$vm" | jq -r '.zone_id')
-    vm_ip=$(echo "$vm" | jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address // "нет IP"')
+declare -A folder_map
+while IFS= read -r folder; do
+    name=$(echo "$folder" | jq -r '.name')
+    id=$(echo "$folder" | jq -r '.id')
     
-    VM_IDS[$i]="$vm_id"
-    VM_IPS[$i]="$vm_ip"
-    VM_NAMES[$i]="$vm_name"
+    folder_map[$i]="$id"
     
-    echo -e "${BOLD}${i})${NC} ${YELLOW}${vm_name}${NC}"
-    echo -e "   ID:     ${vm_id}"
-    echo -e "   IP:     ${CYAN}${vm_ip}${NC}"
-    echo -e "   Статус: ${GREEN}${vm_status}${NC}"
-    echo -e "   Зона:   ${vm_zone}"
-    echo ""
+    echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+    echo "   ID: $id"
+    echo
     
     ((i++))
-done < <(echo "$VM_LIST" | jq -c '.[]')
+done < <(echo "$FOLDERS" | jq -c '.[]')
 
-# Выбор VM
-echo -e "${BOLD}Выбери номер VM для мониторинга:${NC} "
-read vm_choice
+read -r -p "Выбери номер папки: " folder_choice
 
-if [ -z "${VM_IDS[$vm_choice]}" ]; then
+if [[ ! "$folder_choice" =~ ^[0-9]+$ ]] || [[ -z "${folder_map[$folder_choice]:-}" ]]; then
     echo -e "${RED}❌ Неверный выбор${NC}"
     exit 1
 fi
 
-INSTANCE_ID="${VM_IDS[$vm_choice]}"
-VM_HOST="${VM_IPS[$vm_choice]}"
-VM_NAME="${VM_NAMES[$vm_choice]}"
+FOLDER_ID="${folder_map[$folder_choice]}"
+echo
+echo -e "${GREEN}✅ Выбрана папка: $FOLDER_ID${NC}"
 
-echo ""
+# Получаем список VM
+echo
+echo -e "${CYAN}🖥️  Получаю список виртуальных машин...${NC}"
+
+VMS=$(yc_api GET "https://compute.api.cloud.yandex.net/compute/v1/instances?folderId=$FOLDER_ID")
+VM_COUNT=$(echo "$VMS" | jq '.instances // [] | length')
+
+if [[ "$VM_COUNT" -eq 0 ]]; then
+    echo -e "${YELLOW}⚠️  VM не найдены в этой папке${NC}"
+    echo
+    echo "Возможные причины:"
+    echo "  • VM действительно нет"
+    echo "  • У токена нет прав на просмотр VM"
+    echo
+    echo "Создай VM через веб-консоль: https://console.cloud.yandex.ru"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Найдено VM: $VM_COUNT${NC}"
+echo
+
+# Показываем список VM
+echo "┌────────────────────────────────────────────────────────────────┐"
+echo "│                     ДОСТУПНЫЕ ВИРТУАЛЬНЫЕ МАШИНЫ                │"
+echo "└────────────────────────────────────────────────────────────────┘"
+echo
+
+i=1
+declare -A vm_map
+while IFS= read -r vm; do
+    name=$(echo "$vm" | jq -r '.name')
+    id=$(echo "$vm" | jq -r '.id')
+    status=$(echo "$vm" | jq -r '.status')
+    ip=$(echo "$vm" | jq -r '.networkInterfaces[0].primaryV4Address.oneToOneNat.address // "нет внешнего IP"')
+    zone=$(echo "$vm" | jq -r '.zoneId')
+    
+    vm_map[$i]="$id|$ip"
+    
+    echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+    echo "   ID:     $id"
+    echo "   IP:     $ip"
+    echo "   Статус: $status"
+    echo "   Зона:   $zone"
+    echo
+    
+    ((i++))
+done < <(echo "$VMS" | jq -c '.instances[]')
+
+read -r -p "Выбери номер VM для мониторинга: " vm_choice
+
+if [[ ! "$vm_choice" =~ ^[0-9]+$ ]] || [[ -z "${vm_map[$vm_choice]:-}" ]]; then
+    echo -e "${RED}❌ Неверный выбор${NC}"
+    exit 1
+fi
+
+IFS='|' read -r INSTANCE_ID VM_HOST <<< "${vm_map[$vm_choice]}"
+
+echo
 echo -e "${GREEN}✅ Выбрана VM:${NC}"
-echo -e "   ${BOLD}Instance ID:${NC} ${INSTANCE_ID}"
-echo -e "   ${BOLD}VM Host:${NC}     ${VM_HOST}"
-echo ""
+echo "   Instance ID: $INSTANCE_ID"
+echo "   VM Host:     $VM_HOST"
+echo
 
-# Проверка Service Accounts
-echo -e "${BLUE}🔑 Проверяю Service Accounts...${NC}"
-SA_LIST=$(yc iam service-account list --folder-id "$FOLDER_ID" --format json 2>&1)
-if [ $? -ne 0 ]; then
-    echo -e "${YELLOW}⚠️  Не удалось получить список SA, создам новый${NC}"
-    SA_COUNT=0
-else
-    SA_COUNT=$(echo "$SA_LIST" | jq '. | length')
-    echo -e "${GREEN}✅ Найдено Service Accounts: ${SA_COUNT}${NC}"
-fi
+# Service Account через веб-консоль
+echo -e "${CYAN}🔑 Service Account и ключ${NC}"
+echo
+echo -e "${YELLOW}⚠️  ВАЖНО:${NC}"
+echo "Создай Service Account и ключ через веб-консоль:"
+echo
+echo "1️⃣  Открой: https://console.cloud.yandex.ru"
+echo "2️⃣  Перейди: IAM → Service accounts → Создать"
+echo "3️⃣  Имя: watchdog"
+echo "4️⃣  Роль: compute.operator"
+echo "5️⃣  Создай авторизованный ключ"
+echo "6️⃣  Скачай JSON файл"
+echo
 
-# Выбор: использовать существующий или создать новый SA
 SA_ID=""
-SA_NAME=""
+KEY_FILE=""
 
-if [ "$SA_COUNT" -gt 0 ]; then
-    echo ""
-    echo "Хочешь использовать существующий SA или создать новый?"
-    echo "  1) Использовать существующий"
-    echo "  2) Создать новый"
-    echo -n "Выбери: "
-    read sa_choice
-    
-    if [ "$sa_choice" = "1" ]; then
-        echo ""
-        i=1
-        declare -A SA_IDS
-        declare -A SA_NAMES
-        
-        while IFS= read -r sa; do
-            sa_id=$(echo "$sa" | jq -r '.id')
-            sa_name=$(echo "$sa" | jq -r '.name')
-            
-            SA_IDS[$i]="$sa_id"
-            SA_NAMES[$i]="$sa_name"
-            
-            echo "${i}) ${sa_name} (${sa_id})"
-            ((i++))
-        done < <(echo "$SA_LIST" | jq -c '.[]')
-        
-        echo -n "Выбери номер SA: "
-        read sa_num
-        
-        SA_ID="${SA_IDS[$sa_num]}"
-        SA_NAME="${SA_NAMES[$sa_num]}"
-        
-        if [ -z "$SA_ID" ]; then
-            echo -e "${RED}❌ Неверный выбор${NC}"
-            exit 1
-        fi
-        
-        echo -e "${GREEN}✅ Использую существующий SA: ${SA_NAME}${NC}"
-    else
-        sa_choice="2"
-    fi
-fi
-
-# Создание нового SA если нужно
-if [ "$sa_choice" = "2" ] || [ "$SA_COUNT" -eq 0 ]; then
-    echo ""
-    echo -e "${BLUE}🔨 Создаю новый Service Account...${NC}"
-    
-    SA_NAME="watchdog-$(date +%s)"
-    
-    # ИСПРАВЛЕНИЕ: Добавляем --format json
-    SA_CREATE_OUTPUT=$(yc iam service-account create \
-        --name "$SA_NAME" \
-        --folder-id "$FOLDER_ID" \
-        --format json 2>&1)
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Ошибка создания Service Account:${NC}"
-        echo "$SA_CREATE_OUTPUT"
-        exit 1
-    fi
-    
-    SA_ID=$(echo "$SA_CREATE_OUTPUT" | jq -r '.id')
-    
-    if [ -z "$SA_ID" ] || [ "$SA_ID" = "null" ]; then
-        echo -e "${RED}❌ Не удалось получить ID созданного Service Account${NC}"
-        echo "Вывод команды: $SA_CREATE_OUTPUT"
-        exit 1
-    fi
-    
-    echo -e "${GREEN}✅ Service Account создан: ${SA_NAME}${NC}"
-    echo -e "   ID: ${SA_ID}"
-    
-    # Выдача прав
-    echo -e "${BLUE}🔐 Выдаю права compute.operator...${NC}"
-    yc resource-manager folder add-access-binding "$FOLDER_ID" \
-        --role compute.operator \
-        --subject serviceAccount:"$SA_ID" \
-        --format json > /dev/null 2>&1
-    check_error "Не удалось выдать права"
-    
-    echo -e "${GREEN}✅ Права выданы${NC}"
-fi
-
-# Создание ключа
-echo ""
-echo -e "${BLUE}🔐 Создаю авторизованный ключ...${NC}"
-
-KEY_FILE="/tmp/watchdog-key-$(date +%s).json"
-
-yc iam key create \
-    --service-account-id "$SA_ID" \
-    --output "$KEY_FILE" \
-    --format json > /dev/null 2>&1
-check_error "Не удалось создать ключ"
-
-echo -e "${GREEN}✅ Ключ создан: ${KEY_FILE}${NC}"
-
+# ═══════════════════════════════════════════════════════════════════
 # Итоговая информация
-echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}${GREEN}          ✅ ВСЕ ДАННЫЕ СОБРАНЫ УСПЕШНО!${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${BOLD}📋 ДАННЫЕ ДЛЯ НАСТРОЙКИ:${NC}"
-echo ""
-echo -e "${CYAN}┌─────────────────────────────────────────────────────────────────┐${NC}"
-echo -e "${CYAN}│${NC} ${BOLD}VM_HOST${NC} (внешний IP VM)                                         ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${GREEN}${VM_HOST}${NC}                                                    ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC}                                                                 ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${BOLD}INSTANCE_ID${NC} (ID виртуальной машины)                             ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${GREEN}${INSTANCE_ID}${NC}                                             ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC}                                                                 ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${BOLD}SA_KEY_FILE${NC} (путь к ключу Service Account)                     ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${GREEN}${KEY_FILE}${NC}                               ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC}                                                                 ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${BOLD}Service Account${NC}                                                 ${CYAN}│${NC}"
-echo -e "${CYAN}│${NC} ${GREEN}${SA_NAME}${NC}                                             ${CYAN}│${NC}"
-echo -e "${CYAN}└─────────────────────────────────────────────────────────────────┘${NC}"
-echo ""
+# ═══════════════════════════════════════════════════════════════════
 
-echo -e "${BOLD}📝 ЧТО ДАЛЬШЕ:${NC}"
-echo ""
-echo -e "${YELLOW}1️⃣${NC}  Скопируй ключ на сервер:"
-echo -e "   ${CYAN}scp ${KEY_FILE} root@ВАШ_СЕРВЕР:/opt/vps-watchdog/config/sa-key.json${NC}"
-echo ""
-echo -e "${YELLOW}2️⃣${NC}  На сервере открой конфиг:"
-echo -e "   ${CYAN}sudo nano /opt/vps-watchdog/config/watchdog.env${NC}"
-echo ""
-echo -e "${YELLOW}3️⃣${NC}  Впиши эти данные:"
-echo -e "   ${CYAN}VM_HOST=${VM_HOST}${NC}"
-echo -e "   ${CYAN}INSTANCE_ID=${INSTANCE_ID}${NC}"
-echo ""
-echo -e "${YELLOW}4️⃣${NC}  Перезапусти сервис:"
-echo -e "   ${CYAN}sudo systemctl restart vps-watchdog${NC}"
-echo ""
-echo -e "${YELLOW}5️⃣${NC}  Проверь логи:"
-echo -e "   ${CYAN}sudo docker logs -f vps-watchdog${NC}"
-echo ""
-echo -e "${GREEN}✅ Готово! Все данные сохранены в: ${KEY_FILE}${NC}"
-echo ""
+echo
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}${GREEN}          ✅ ДАННЫЕ СОБРАНЫ!${NC}"
+echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo
+
+cat << EOF
+
+📋 ДАННЫЕ ДЛЯ НАСТРОЙКИ:
+
+┌─────────────────────────────────────────────────────────────────┐
+│ VM_HOST (внешний IP VM)                                         │
+│ ${GREEN}${VM_HOST}${NC}
+│                                                                 │
+│ INSTANCE_ID (ID виртуальной машины)                             │
+│ ${GREEN}${INSTANCE_ID}${NC}
+│                                                                 │
+│ SA_KEY_FILE                                                     │
+│ ${YELLOW}Создай через веб-консоль (инструкция выше)${NC}
+└─────────────────────────────────────────────────────────────────┘
+
+📝 ЧТО ДАЛЬШЕ:
+
+1️⃣  Создай Service Account через веб-консоль:
+   ${CYAN}https://console.cloud.yandex.ru → IAM → Service accounts${NC}
+   
+   a) Создай SA с именем: watchdog
+   b) Выдай роль: compute.operator
+   c) Создай авторизованный ключ
+   d) Скачай ключ
+   e) Скопируй на ЭТОТ СЕРВЕР:
+      scp ~/Downloads/key.json root@$(hostname -I | awk '{print $1}'):/opt/vps-watchdog/config/sa-key.json
+      
+      Или если уже на этом сервере:
+      sudo cp ~/Downloads/key.json /opt/vps-watchdog/config/sa-key.json
+      sudo chmod 600 /opt/vps-watchdog/config/sa-key.json
+
+2️⃣  Открой конфиг:
+   ${CYAN}sudo nano /opt/vps-watchdog/config/watchdog.env${NC}
+
+3️⃣  Впиши эти данные:
+   ${CYAN}VM_HOST=$VM_HOST
+   INSTANCE_ID=$INSTANCE_ID${NC}
+
+4️⃣  Перезапусти:
+   ${CYAN}sudo systemctl restart vps-watchdog${NC}
+
+5️⃣  Проверь логи:
+   ${CYAN}sudo docker logs -f vps-watchdog${NC}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💾 Данные сохранены в: watchdog-setup-data.txt
+
+EOF
+
+# Сохраняем в файл
+cat > watchdog-setup-data.txt << EOF
+VPS Watchdog - Данные для настройки
+Создано: $(date)
+Метод авторизации: OAuth токен
+
+VM_HOST=$VM_HOST
+INSTANCE_ID=$INSTANCE_ID
+FOLDER_ID=$FOLDER_ID
+
+Создай Service Account через веб-консоль:
+https://console.cloud.yandex.ru → IAM → Service accounts
+EOF
+
+echo -e "${GREEN}✅ Готово!${NC}"
