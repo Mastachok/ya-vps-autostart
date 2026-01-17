@@ -40,9 +40,13 @@ key_path(){ echo "$PROFILES_DIR/$(active_profile).sa-key.json"; }
 apply_active_env(){
   local src; src="$(env_path)"
   if [[ -f "$src" ]]; then
-    cp -f "$src" "$APP_DIR/.env"
+    cp -f "$src" "$APP_DIR/.env" 2>/dev/null || {
+      bad "Ошибка копирования профиля: $src"
+      return 1
+    }
   else
-    wrn "Файл профиля не найден: $src"
+    bad "Файл профиля не найден: $src"
+    return 1
   fi
 }
 
@@ -62,24 +66,37 @@ list_profiles(){
 pick_profile_cli(){
   echo
   inf "Доступные профили:"
-  local i=0 p
+  local i=0 p profiles=()
   while read -r p; do
     [[ -n "$p" ]] || continue
+    profiles+=("$p")
     i=$((i+1))
-    echo "  $i) $p"
+    if [[ "$p" == "$(active_profile)" ]]; then
+      echo "  $i) $p ${c_ok}(активный)${c_rst}"
+    else
+      echo "  $i) $p"
+    fi
   done < <(list_profiles)
 
   if [[ "$i" -eq 0 ]]; then
-    wrn "Профилей нет."
+    wrn "Профилей нет. Создай первый профиль."
     return 1
   fi
 
   echo
   read -r -p "Введи номер профиля: " n
-  [[ "$n" =~ ^[0-9]+$ ]] || return 1
-  p="$(list_profiles | sed -n "${n}p")"
-  [[ -n "$p" ]] || return 1
-  echo "$p"
+  if [[ ! "$n" =~ ^[0-9]+$ ]] || [[ "$n" -lt 1 ]] || [[ "$n" -gt "$i" ]]; then
+    bad "Неверный номер профиля"
+    return 1
+  fi
+  
+  local selected="${profiles[$((n-1))]}"
+  if [[ -z "$selected" ]]; then
+    bad "Профиль не найден"
+    return 1
+  fi
+  
+  echo "$selected"
 }
 
 svc_state(){
@@ -335,9 +352,20 @@ EOF
       3)
         local p
         p="$(pick_profile_cli)" || { pause; continue; }
+        
+        # Проверяем, что файл профиля существует
+        if [[ ! -f "$PROFILES_DIR/$p.env" ]]; then
+          bad "Файл профиля не найден: $PROFILES_DIR/$p.env"
+          pause
+          continue
+        fi
+        
         echo "$p" > "$ACTIVE_FILE"
-        apply_active_env
-        systemctl restart "$SERVICE" && ok "Сервис перезапущен с профилем: $p" || bad "Ошибка перезапуска"
+        if apply_active_env; then
+          systemctl restart "$SERVICE" && ok "Сервис перезапущен с профилем: $p" || bad "Ошибка перезапуска"
+        else
+          bad "Не удалось применить профиль"
+        fi
         pause
         ;;
       4)
@@ -725,16 +753,23 @@ main_menu(){
   while true; do
     clear
     load_env_safe
-    local prof host iid cooldown
+    local prof host iid cooldown prof_status
     prof="$(active_profile)"
     host="${VM_HOST:-<не задан>}"
     iid="${INSTANCE_ID:-<не задан>}"
     cooldown="${COOLDOWN_MINUTES:-5}"
+    
+    # Проверяем существование профиля
+    if [[ -f "$PROFILES_DIR/$prof.env" ]]; then
+      prof_status="${c_ok}✓${c_rst}"
+    else
+      prof_status="${c_bad}✗ (не найден)${c_rst}"
+    fi
 
     echo -e "${c_info}${TITLE}${c_rst}"
     hr
     echo -e "${c_dim}📊 СТАТУС:${c_rst}"
-    echo -e "👤 Профиль:         ${c_info}${prof}${c_rst}"
+    echo -e "👤 Профиль:         ${c_info}${prof}${c_rst} ${prof_status}"
     echo -e "🌐 VM_HOST:         ${host}"
     echo -e "🆔 INSTANCE_ID:     ${iid}"
     echo -e "⏱️  COOLDOWN:        ${cooldown} минут"
@@ -772,6 +807,43 @@ main_menu(){
 
 need_root
 mkdir -p "$PROFILES_DIR"
-[[ -f "$ACTIVE_FILE" ]] || echo "default" > "$ACTIVE_FILE"
-apply_active_env || true
+
+# Проверяем и создаём активный профиль если нужно
+if [[ ! -f "$ACTIVE_FILE" ]]; then
+  echo "default" > "$ACTIVE_FILE"
+fi
+
+# Проверяем существование файла активного профиля
+current_profile="$(active_profile)"
+profile_file="$PROFILES_DIR/$current_profile.env"
+
+if [[ ! -f "$profile_file" ]]; then
+  wrn "Профиль '$current_profile' не найден, создаю default профиль..."
+  
+  # Создаём default профиль если его нет
+  cat > "$PROFILES_DIR/default.env" <<'EOF'
+# ✅ Профиль по умолчанию (заполни через меню: Профили → Создать)
+PROFILE_NAME=default
+VM_HOST=
+INSTANCE_ID=
+CHECK_INTERVAL=60
+PING_ATTEMPTS=5
+PING_TIMEOUT=5
+COOLDOWN_MINUTES=5
+SA_KEY_FILE=/app/profiles/default.sa-key.json
+EOF
+  
+  # Создаём пустой ключ
+  touch "$PROFILES_DIR/default.sa-key.json"
+  chmod 600 "$PROFILES_DIR/default.sa-key.json" 2>/dev/null || true
+  
+  echo "default" > "$ACTIVE_FILE"
+fi
+
+# Применяем профиль
+apply_active_env || {
+  bad "Не удалось применить профиль. Проверь файлы в $PROFILES_DIR"
+  exit 1
+}
+
 main_menu
