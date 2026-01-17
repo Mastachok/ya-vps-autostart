@@ -1,23 +1,32 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
+# Метаданные
+LABEL maintainer="VPS Watchdog"
+LABEL version="3.0.0"
+LABEL description="Multi-VM monitoring with Telegram notifications"
+
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Python зависимости
+RUN pip install --no-cache-dir \
+    yandexcloud==0.307.0 \
+    requests==2.31.0 \
+    grpcio==1.60.0 \
+    protobuf==4.25.1
+
+# Создаём рабочую директорию
 WORKDIR /app
 
-# Устанавливаем зависимости
-RUN pip install --no-cache-dir requests PyJWT[crypto] cryptography
+# Копируем приложение
+COPY app/*.py /app/
 
-# Устанавливаем системные пакеты
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends iputils-ping ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# Создаём директории
+RUN mkdir -p /app/config /app/profiles /app/data /app/logs
 
-# Копируем скрипт
-COPY monitor.py .
-RUN chmod +x monitor.py
-
-# Создаём непривилегированного пользователя
-RUN useradd -m -u 1000 watchdog && \
-    chown -R watchdog:watchdog /app
-
-USER watchdog
-
-CMD ["python3", "-u", "monitor.py"]
+# Запускаем мониторинг
+CMD ["python", "-u", "monitor.py"]
