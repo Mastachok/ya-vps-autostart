@@ -1,332 +1,374 @@
-#!/usr/bin/env python3
 """
-VPS Watchdog v2.0
-Простой мониторинг и автозапуск VM в Yandex Cloud
+VPS Watchdog v3.0 - Multi-threaded VM Monitor
+Многопоточный мониторинг множества VM с Telegram уведомлениями
 """
 
 import os
 import sys
 import time
-import json
-import subprocess
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Tuple
-import requests
-import jwt
+import subprocess
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
 
-# ═══════════════════════════════════════════════════════════════════
-# ЛОГИРОВАНИЕ
-# ═══════════════════════════════════════════════════════════════════
+# Добавляем путь для импорта модулей
+sys.path.insert(0, '/opt/vps-watchdog/app')
 
+from vm_manager import VMProfileManager, VMProfile
+from telegram_bot import TelegramBot
+
+# Yandex Cloud SDK
+try:
+    import yandexcloud
+    from yandex.cloud.compute.v1.instance_service_pb2 import StartInstanceRequest, GetInstanceRequest
+    from yandex.cloud.compute.v1.instance_service_pb2_grpc import InstanceServiceStub
+except ImportError:
+    print("ERROR: yandexcloud library not installed")
+    sys.exit(1)
+
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.FileHandler('/opt/vps-watchdog/logs/watchdog.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
 )
-logger = logging.getLogger('watchdog')
+logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════════════════════════
-# КОНСТАНТЫ
-# ═══════════════════════════════════════════════════════════════════
 
-IAM_URL = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
-COMPUTE_URL = "https://compute.api.cloud.yandex.net/compute/v1"
-
-# ═══════════════════════════════════════════════════════════════════
-# КОНФИГУРАЦИЯ
-# ═══════════════════════════════════════════════════════════════════
-
-class Config:
-    """Конфигурация watchdog"""
+class VMMonitor:
+    """Монитор для одной VM"""
     
-    def __init__(self):
-        self.vm_host = self._get_str('VM_HOST')
-        self.instance_id = self._get_str('INSTANCE_ID')
-        self.sa_key_file = self._get_str('SA_KEY_FILE', '/app/config/sa-key.json')
-        
-        self.check_interval = self._get_int('CHECK_INTERVAL', 60, 10, 3600)
-        self.ping_count = self._get_int('PING_COUNT', 3, 1, 10)
-        self.ping_timeout = self._get_int('PING_TIMEOUT', 5, 1, 30)
-        self.cooldown_minutes = self._get_int('COOLDOWN_MINUTES', 5, 1, 60)
-        self.max_start_attempts = self._get_int('MAX_START_ATTEMPTS', 3, 1, 10)
-    
-    def _get_str(self, name: str, default: str = '') -> str:
-        """Получение строки из env"""
-        return os.getenv(name, default).strip()
-    
-    def _get_int(self, name: str, default: int, min_val: int, max_val: int) -> int:
-        """Получение целого числа с валидацией"""
-        try:
-            value = int(os.getenv(name, default))
-            if value < min_val:
-                logger.warning(f"{name}={value} too small, using {min_val}")
-                return min_val
-            if value > max_val:
-                logger.warning(f"{name}={value} too large, using {max_val}")
-                return max_val
-            return value
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid {name}, using default {default}")
-            return default
-    
-    def validate(self) -> Tuple[bool, list]:
-        """Проверка конфигурации"""
-        errors = []
-        
-        if not self.vm_host:
-            errors.append("❌ VM_HOST не указан")
-        
-        if not self.instance_id:
-            errors.append("❌ INSTANCE_ID не указан")
-        
-        if not self.sa_key_file:
-            errors.append("❌ SA_KEY_FILE не указан")
-        elif not os.path.exists(self.sa_key_file):
-            errors.append(f"❌ Файл ключа не найден: {self.sa_key_file}")
-        elif os.path.getsize(self.sa_key_file) == 0:
-            errors.append(f"❌ Файл ключа пустой: {self.sa_key_file}")
-        else:
-            # Проверяем валидность JSON
-            try:
-                with open(self.sa_key_file, 'r') as f:
-                    key = json.load(f)
-                required = ['service_account_id', 'id', 'private_key']
-                missing = [f for f in required if f not in key]
-                if missing:
-                    errors.append(f"❌ В ключе отсутствуют поля: {', '.join(missing)}")
-            except json.JSONDecodeError:
-                errors.append("❌ Файл ключа содержит невалидный JSON")
-            except Exception as e:
-                errors.append(f"❌ Ошибка чтения ключа: {e}")
-        
-        return (len(errors) == 0, errors)
-    
-    def print(self):
-        """Красивый вывод конфигурации"""
-        logger.info("═" * 70)
-        logger.info("🛡️  VPS WATCHDOG - Конфигурация")
-        logger.info("═" * 70)
-        logger.info(f"🌐 VM Host:             {self.vm_host or '<НЕ УКАЗАН>'}")
-        logger.info(f"🆔 Instance ID:         {self.instance_id or '<НЕ УКАЗАН>'}")
-        logger.info(f"🔑 SA Key:              {self.sa_key_file}")
-        logger.info(f"⏱️  Интервал проверки:   {self.check_interval}с")
-        logger.info(f"📡 Ping попыток:        {self.ping_count}")
-        logger.info(f"⏰ Ping таймаут:        {self.ping_timeout}с")
-        logger.info(f"⏳ Cooldown:            {self.cooldown_minutes} минут")
-        logger.info(f"🔄 Макс. попыток:       {self.max_start_attempts}")
-        logger.info("═" * 70)
-
-# ═══════════════════════════════════════════════════════════════════
-# YANDEX CLOUD API
-# ═══════════════════════════════════════════════════════════════════
-
-class YandexCloudAPI:
-    """Работа с Yandex Cloud API"""
-    
-    def __init__(self, sa_key_file: str):
+    def __init__(self, profile: VMProfile, sa_key_file: str, telegram: TelegramBot):
+        self.profile = profile
         self.sa_key_file = sa_key_file
-        self._iam_token: Optional[str] = None
-        self._token_expires_at = 0
-    
-    def _load_sa_key(self) -> dict:
-        """Загрузка ключа Service Account"""
-        with open(self.sa_key_file, 'r') as f:
-            return json.load(f)
-    
-    def _create_jwt(self, sa_key: dict) -> str:
-        """Создание JWT токена"""
-        now = int(time.time())
-        payload = {
-            'aud': IAM_URL,
-            'iss': sa_key['service_account_id'],
-            'iat': now,
-            'exp': now + 360
-        }
-        headers = {'kid': sa_key['id']}
-        return jwt.encode(payload, sa_key['private_key'], algorithm='PS256', headers=headers)
-    
-    def get_iam_token(self, force: bool = False) -> str:
-        """Получение IAM токена (с кешированием)"""
-        now = time.time()
+        self.telegram = telegram
+        self.running = False
+        self.thread = None
         
-        if not force and self._iam_token and now < self._token_expires_at:
-            return self._iam_token
+        # Статистика
+        self.last_check = None
+        self.last_up = None
+        self.last_down = None
+        self.start_attempts = 0
+        self.last_cooldown = None
+        self.restarts_count = 0
         
-        sa_key = self._load_sa_key()
-        jwt_token = self._create_jwt(sa_key)
+        # Yandex Cloud SDK
+        self.sdk = None
+        self._init_sdk()
         
-        response = requests.post(IAM_URL, json={'jwt': jwt_token}, timeout=15)
-        response.raise_for_status()
-        
-        self._iam_token = response.json()['iamToken']
-        self._token_expires_at = now + 10800  # 3 часа
-        
-        return self._iam_token
-    
-    def get_instance_status(self, instance_id: str) -> Optional[str]:
-        """Получение статуса VM"""
+    def _init_sdk(self):
+        """Инициализация Yandex Cloud SDK"""
         try:
-            token = self.get_iam_token()
-            url = f"{COMPUTE_URL}/instances/{instance_id}"
-            response = requests.get(url, headers={'Authorization': f'Bearer {token}'}, timeout=10)
-            response.raise_for_status()
-            return response.json().get('status')
+            with open(self.sa_key_file, 'r') as f:
+                import json
+                sa_key = json.load(f)
+            
+            self.sdk = yandexcloud.SDK(service_account_key=sa_key)
+            logger.info(f"[{self.profile.name}] SDK инициализирован")
         except Exception as e:
-            logger.error(f"Ошибка получения статуса VM: {e}")
+            logger.error(f"[{self.profile.name}] Ошибка инициализации SDK: {e}")
+            self.sdk = None
+    
+    def ping_vm(self) -> bool:
+        """Проверка доступности VM через ping"""
+        try:
+            result = subprocess.run(
+                ['ping', '-c', str(self.profile.ping_count), 
+                 '-W', str(self.profile.ping_timeout), self.profile.vm_host],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self.profile.ping_timeout * self.profile.ping_count + 5
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.error(f"[{self.profile.name}] Ошибка ping: {e}")
+            return False
+    
+    def get_instance_status(self) -> Optional[str]:
+        """Получить статус VM из Yandex Cloud"""
+        if not self.sdk:
+            return None
+        try:
+            instance_service = self.sdk.client(InstanceServiceStub)
+            request = GetInstanceRequest(instance_id=self.profile.instance_id)
+            instance = instance_service.Get(request)
+            return instance.status
+        except Exception as e:
+            logger.error(f"[{self.profile.name}] Ошибка получения статуса: {e}")
             return None
     
-    def start_instance(self, instance_id: str) -> Tuple[bool, str]:
-        """Запуск VM"""
-        try:
-            token = self.get_iam_token()
-            url = f"{COMPUTE_URL}/instances/{instance_id}:start"
-            response = requests.post(url, headers={'Authorization': f'Bearer {token}'}, timeout=30)
-            
-            if response.status_code in (200, 202):
-                return (True, "VM запускается")
-            elif response.status_code == 409:
-                return (True, "VM уже запущена")
-            else:
-                return (False, f"Ошибка {response.status_code}: {response.text}")
+    def check_operation_in_progress(self) -> bool:
+        """Проверка выполнения операций над VM"""
+        status = self.get_instance_status()
+        if status in ['STARTING', 'STOPPING', 'RESTARTING', 'UPDATING']:
+            logger.info(f"[{self.profile.name}] Операция в процессе: {status}")
+            return True
+        return False
+    
+    def start_vm(self) -> bool:
+        """Запуск VM через Yandex Cloud API"""
+        if not self.sdk:
+            logger.error(f"[{self.profile.name}] SDK не инициализирован")
+            return False
         
-        except Exception as e:
-            return (False, str(e))
-
-# ═══════════════════════════════════════════════════════════════════
-# ПРОВЕРКА ДОСТУПНОСТИ
-# ═══════════════════════════════════════════════════════════════════
-
-def check_vm_alive(host: str, count: int, timeout: int) -> bool:
-    """Проверка доступности VM через ping"""
-    try:
-        cmd = ['ping', '-c', str(count), '-W', str(timeout), host]
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout * count + 5)
-        return result.returncode == 0
-    except subprocess.TimeoutExpired:
-        return False
-    except Exception as e:
-        logger.error(f"Ошибка ping: {e}")
-        return False
-
-# ═══════════════════════════════════════════════════════════════════
-# ГЛАВНЫЙ ЦИКЛ
-# ═══════════════════════════════════════════════════════════════════
-
-def main():
-    """Основной цикл мониторинга"""
-    
-    # Загружаем конфигурацию
-    config = Config()
-    config.print()
-    
-    # Валидация
-    is_valid, errors = config.validate()
-    if not is_valid:
-        logger.error("❌ Ошибки конфигурации:")
-        for error in errors:
-            logger.error(f"   {error}")
-        logger.error("")
-        logger.error("💡 Исправь конфигурацию и перезапусти контейнер:")
-        logger.error("   sudo vps-watchdog config")
-        logger.error("   sudo systemctl restart vps-watchdog")
-        logger.error("")
-        logger.info("😴 Засыпаю до исправления...")
-        while True:
-            time.sleep(3600)
-    
-    logger.info("✅ Конфигурация валидна")
-    logger.info("🚀 Запуск мониторинга...\n")
-    
-    # Инициализация API
-    api = YandexCloudAPI(config.sa_key_file)
-    
-    # Состояние
-    cooldown_until = 0
-    consecutive_failures = 0
-    start_attempts_counter = 0
-    last_status = None
-    
-    # Основной цикл
-    while True:
+        # Проверяем статус перед запуском
+        if self.check_operation_in_progress():
+            logger.warning(f"[{self.profile.name}] VM занята, ждём...")
+            return False
+        
         try:
-            now = time.time()
-            is_alive = check_vm_alive(config.vm_host, config.ping_count, config.ping_timeout)
+            instance_service = self.sdk.client(InstanceServiceStub)
             
-            if is_alive:
-                # VM доступна
-                if last_status != 'UP':
-                    logger.info(f"✅ VM {config.vm_host} доступна")
-                    if consecutive_failures > 0:
-                        logger.info(f"   (была недоступна {consecutive_failures} раз)")
-                    consecutive_failures = 0
-                    start_attempts_counter = 0
-                last_status = 'UP'
+            # Проверяем текущий статус
+            status = self.get_instance_status()
+            logger.info(f"[{self.profile.name}] Текущий статус: {status}")
             
+            if status == 'RUNNING':
+                logger.info(f"[{self.profile.name}] VM уже запущена")
+                return True
+            
+            if status == 'STOPPED':
+                logger.info(f"[{self.profile.name}] Запуск VM...")
+                request = StartInstanceRequest(instance_id=self.profile.instance_id)
+                operation = instance_service.Start(request)
+                logger.info(f"[{self.profile.name}] Операция запуска: {operation.id}")
+                self.restarts_count += 1
+                return True
+            
+            logger.warning(f"[{self.profile.name}] Неожиданный статус: {status}")
+            return False
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[{self.profile.name}] Ошибка запуска: {error_msg}")
+            
+            # Уведомление об ошибке
+            if "operation" in error_msg.lower() and "in process" in error_msg.lower():
+                logger.info(f"[{self.profile.name}] Операция уже выполняется, ждём...")
             else:
-                # VM недоступна
-                consecutive_failures += 1
-                logger.warning(f"❌ VM {config.vm_host} НЕ отвечает (попытка {consecutive_failures})")
+                self.telegram.notify_error(self.profile.name, self.profile.vm_host, error_msg)
+            
+            return False
+    
+    def is_in_cooldown(self) -> bool:
+        """Проверка cooldown периода"""
+        if not self.last_cooldown:
+            return False
+        cooldown_end = self.last_cooldown + timedelta(minutes=self.profile.cooldown_minutes)
+        return datetime.now() < cooldown_end
+    
+    def monitor_loop(self):
+        """Основной цикл мониторинга"""
+        logger.info(f"[{self.profile.name}] Запуск мониторинга")
+        logger.info(f"[{self.profile.name}] VM: {self.profile.vm_host}")
+        logger.info(f"[{self.profile.name}] Instance ID: {self.profile.instance_id}")
+        logger.info(f"[{self.profile.name}] Интервал проверки: {self.profile.check_interval}с")
+        
+        while self.running:
+            try:
+                self.last_check = datetime.now()
                 
-                # Проверяем cooldown
-                if now < cooldown_until:
-                    remaining = int((cooldown_until - now) / 60)
-                    logger.info(f"⏳ Cooldown активен, осталось {remaining} минут")
+                # Пингуем VM
+                is_up = self.ping_vm()
                 
+                if is_up:
+                    # VM доступна
+                    if self.last_down:
+                        # VM восстановилась
+                        downtime = int((datetime.now() - self.last_down).total_seconds())
+                        logger.info(f"[{self.profile.name}] ✅ VM восстановлена (downtime: {downtime}с)")
+                        self.telegram.notify_vm_up(self.profile.name, self.profile.vm_host, downtime)
+                        self.last_down = None
+                        self.start_attempts = 0
+                        self.last_cooldown = None
+                    else:
+                        logger.info(f"[{self.profile.name}] ✅ VM доступна")
+                    
+                    self.last_up = datetime.now()
+                    
                 else:
-                    # Пытаемся запустить
-                    start_attempts_counter += 1
-                    logger.info(f"🚀 Попытка #{start_attempts_counter} запустить VM...")
+                    # VM недоступна
+                    logger.warning(f"[{self.profile.name}] ❌ VM НЕ отвечает (попытка {self.start_attempts + 1})")
                     
-                    # Проверяем статус
-                    status = api.get_instance_status(config.instance_id)
-                    if status:
-                        logger.info(f"   Текущий статус: {status}")
-                        
-                        if status == 'RUNNING':
-                            logger.warning("   ⚠️  VM показывает статус RUNNING, но не пингуется")
-                            logger.warning("   Возможно проблема с сетью внутри VM")
-                        elif status == 'STARTING':
-                            logger.info("   VM уже запускается, ждём...")
+                    if not self.last_down:
+                        self.last_down = datetime.now()
                     
-                    # Запускаем
-                    success, message = api.start_instance(config.instance_id)
-                    if success:
-                        logger.info(f"   ✅ {message}")
+                    # Проверяем cooldown
+                    if self.is_in_cooldown():
+                        cooldown_left = int((self.last_cooldown + timedelta(minutes=self.profile.cooldown_minutes) - datetime.now()).total_seconds() / 60)
+                        logger.info(f"[{self.profile.name}] ⏳ Cooldown активен, осталось {cooldown_left} минут")
                     else:
-                        logger.error(f"   ❌ {message}")
-                    
-                    # Устанавливаем cooldown
-                    # Если много попыток подряд - увеличиваем cooldown
-                    if start_attempts_counter >= config.max_start_attempts:
-                        cooldown_mins = config.cooldown_minutes * 2
-                        logger.warning(f"   ⚠️  Много попыток подряд, увеличиваю cooldown до {cooldown_mins} минут")
-                        start_attempts_counter = 0
-                    else:
-                        cooldown_mins = config.cooldown_minutes
-                    
-                    cooldown_until = now + (cooldown_mins * 60)
-                    logger.info(f"⏳ Cooldown установлен на {cooldown_mins} минут\n")
+                        # Пытаемся запустить
+                        if self.start_attempts < self.profile.max_start_attempts:
+                            self.start_attempts += 1
+                            logger.info(f"[{self.profile.name}] 🔄 Попытка #{self.start_attempts} запустить VM...")
+                            
+                            # Уведомление о падении
+                            self.telegram.notify_vm_down(
+                                self.profile.name,
+                                self.profile.vm_host,
+                                self.start_attempts
+                            )
+                            
+                            if self.start_vm():
+                                logger.info(f"[{self.profile.name}] 🚀 Команда запуска отправлена")
+                                self.last_cooldown = datetime.now()
+                            else:
+                                logger.error(f"[{self.profile.name}] ❌ Не удалось запустить")
+                        else:
+                            if not self.last_cooldown or not self.is_in_cooldown():
+                                logger.warning(f"[{self.profile.name}] ⚠️ Много попыток подряд, увеличиваю cooldown до 2 минут")
+                                self.start_attempts = 0
+                                self.last_cooldown = datetime.now()
                 
-                last_status = 'DOWN'
+            except Exception as e:
+                logger.error(f"[{self.profile.name}] Ошибка в цикле мониторинга: {e}", exc_info=True)
             
-            # Ждём до следующей проверки
-            time.sleep(config.check_interval)
+            # Ждём перед следующей проверкой
+            time.sleep(self.profile.check_interval)
         
+        logger.info(f"[{self.profile.name}] Мониторинг остановлен")
+    
+    def start(self):
+        """Запустить мониторинг"""
+        if self.running:
+            logger.warning(f"[{self.profile.name}] Мониторинг уже запущен")
+            return
+        
+        self.running = True
+        self.thread = threading.Thread(target=self.monitor_loop, daemon=True)
+        self.thread.start()
+        logger.info(f"[{self.profile.name}] Мониторинг запущен в потоке")
+    
+    def stop(self):
+        """Остановить мониторинг"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        logger.info(f"[{self.profile.name}] Мониторинг остановлен")
+    
+    def get_status(self) -> dict:
+        """Получить текущий статус"""
+        is_up = self.last_up and (not self.last_down or self.last_up > self.last_down)
+        
+        uptime = "N/A"
+        if self.last_up:
+            uptime_seconds = int((datetime.now() - self.last_up).total_seconds())
+            days = uptime_seconds // 86400
+            hours = (uptime_seconds % 86400) // 3600
+            minutes = (uptime_seconds % 3600) // 60
+            if days > 0:
+                uptime = f"{days}д {hours}ч {minutes}м"
+            elif hours > 0:
+                uptime = f"{hours}ч {minutes}м"
+            else:
+                uptime = f"{minutes}м"
+        
+        last_check_str = "N/A"
+        if self.last_check:
+            seconds_ago = int((datetime.now() - self.last_check).total_seconds())
+            if seconds_ago < 60:
+                last_check_str = f"{seconds_ago} сек назад"
+            else:
+                last_check_str = f"{seconds_ago // 60} мин назад"
+        
+        return {
+            'name': self.profile.name,
+            'vm_host': self.profile.vm_host,
+            'status': 'online' if is_up else 'offline',
+            'uptime': uptime,
+            'last_check': last_check_str,
+            'restarts': self.restarts_count
+        }
+
+
+class MultiVMWatchdog:
+    """Главный класс мониторинга множества VM"""
+    
+    def __init__(self):
+        self.profile_manager = VMProfileManager()
+        self.telegram = TelegramBot()
+        self.monitors = {}
+        self.running = False
+        
+        # Загружаем SA ключ
+        self.sa_key_file = os.getenv('SA_KEY_FILE', '/app/config/sa-key.json')
+        if not Path(self.sa_key_file).exists():
+            logger.error(f"SA ключ не найден: {self.sa_key_file}")
+            sys.exit(1)
+        
+        logger.info("═" * 80)
+        logger.info("🛡️  VPS WATCHDOG v3.0 - Multi-VM Monitor")
+        logger.info("═" * 80)
+    
+    def load_profiles(self):
+        """Загрузить и запустить мониторинг для всех включенных профилей"""
+        profiles = self.profile_manager.get_enabled_profiles()
+        logger.info(f"📊 Найдено активных профилей: {len(profiles)}")
+        
+        for profile in profiles:
+            if profile.id not in self.monitors:
+                logger.info(f"➕ Добавляю профиль: {profile.name}")
+                monitor = VMMonitor(profile, self.sa_key_file, self.telegram)
+                self.monitors[profile.id] = monitor
+                monitor.start()
+    
+    def reload_profiles(self):
+        """Перезагрузить профили (добавить новые, удалить отключенные)"""
+        profiles = self.profile_manager.get_enabled_profiles()
+        active_ids = {p.id for p in profiles}
+        
+        # Останавливаем удалённые/отключенные
+        for monitor_id in list(self.monitors.keys()):
+            if monitor_id not in active_ids:
+                logger.info(f"🗑️  Останавливаю профиль: {self.monitors[monitor_id].profile.name}")
+                self.monitors[monitor_id].stop()
+                del self.monitors[monitor_id]
+        
+        # Добавляем новые
+        for profile in profiles:
+            if profile.id not in self.monitors:
+                logger.info(f"➕ Добавляю профиль: {profile.name}")
+                monitor = VMMonitor(profile, self.sa_key_file, self.telegram)
+                self.monitors[profile.id] = monitor
+                monitor.start()
+    
+    def run(self):
+        """Главный цикл"""
+        self.running = True
+        self.load_profiles()
+        
+        if not self.monitors:
+            logger.warning("⚠️  Нет активных профилей для мониторинга!")
+            logger.info("Добавь профили через меню: sudo vps-watchdog")
+            return
+        
+        logger.info("🚀 Мониторинг запущен!")
+        logger.info("=" * 80)
+        
+        try:
+            while self.running:
+                time.sleep(60)  # Проверяем новые профили каждую минуту
+                self.reload_profiles()
         except KeyboardInterrupt:
-            logger.info("\n⚠️  Получен сигнал остановки")
-            logger.info("👋 Завершение работы...")
-            break
-        
-        except Exception as e:
-            logger.error(f"❌ Неожиданная ошибка: {e}", exc_info=True)
-            logger.info(f"😴 Сплю {config.check_interval}с и попробую снова...\n")
-            time.sleep(config.check_interval)
+            logger.info("\n⚠️  Получен сигнал остановки...")
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Остановить все мониторы"""
+        logger.info("🛑 Останавливаю все мониторы...")
+        for monitor in self.monitors.values():
+            monitor.stop()
+        logger.info("✅ Все мониторы остановлены")
+        self.running = False
+
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        logger.critical(f"💀 Критическая ошибка: {e}", exc_info=True)
-        sys.exit(1)
+    watchdog = MultiVMWatchdog()
+    watchdog.run()
