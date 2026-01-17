@@ -434,53 +434,123 @@ setup_key() {
         return
     fi
     
-    if ! command -v yc >/dev/null 2>&1; then
-        error "yc CLI не установлен"
-        pause
-        return
-    fi
-    
-    info "Создание Service Account и ключа"
+    echo "Выбери способ:"
+    echo
+    echo "  1) 📤 Загрузить готовый ключ (если уже есть)"
+    echo "  2) 🔨 Создать новый через yc CLI"
+    echo "  0) ← Назад"
     echo
     
-    read -r -p "Folder ID (из yc config list): " folder_id
-    if [[ -z "$folder_id" ]]; then
-        error "Folder ID обязателен"
-        pause
-        return
-    fi
+    read -r -p "Выбери: " key_choice
     
-    read -r -p "Имя Service Account [watchdog]: " sa_name
-    sa_name=${sa_name:-watchdog}
-    
-    info "Создаю Service Account..."
-    sa_id=$(yc iam service-account create --name "$sa_name" --folder-id "$folder_id" --format json 2>/dev/null | jq -r '.id') || {
-        error "Ошибка создания SA"
-        echo "Возможно SA с таким именем уже существует"
-        echo "Попробуй другое имя или используй существующий"
-        pause
-        return
-    }
-    
-    success "Service Account создан: $sa_id"
-    
-    info "Выдаю права..."
-    yc resource-manager folder add-access-binding "$folder_id" \
-        --role compute.operator \
-        --subject "serviceAccount:$sa_id" >/dev/null
-    
-    info "Создаю ключ..."
-    mkdir -p "$(dirname "$KEY_FILE")"
-    yc iam key create --service-account-id "$sa_id" --output "$KEY_FILE" >/dev/null
-    chmod 600 "$KEY_FILE"
-    
-    success "Ключ создан: $KEY_FILE"
-    
-    info "Перезапускаю сервис..."
-    systemctl restart "$SERVICE"
-    
-    success "Готово!"
-    pause
+    case $key_choice in
+        1)
+            # Загрузка готового ключа
+            echo
+            info "📤 Загрузка ключа"
+            echo
+            echo "Введи путь к файлу ключа:"
+            echo "(или просто перетащи файл в терминал)"
+            echo
+            read -r -e -p "Путь: " key_path
+            
+            # Убираем возможные кавычки
+            key_path="${key_path//\'/}"
+            key_path="${key_path//\"/}"
+            
+            if [[ ! -f "$key_path" ]]; then
+                error "Файл не найден: $key_path"
+                pause
+                return
+            fi
+            
+            # Проверяем что это JSON
+            if ! jq empty "$key_path" 2>/dev/null; then
+                error "Файл не является валидным JSON"
+                pause
+                return
+            fi
+            
+            # Проверяем структуру ключа
+            if ! jq -e '.service_account_id and .id and .private_key' "$key_path" >/dev/null; then
+                error "Неверная структура ключа"
+                echo "Ключ должен содержать: service_account_id, id, private_key"
+                pause
+                return
+            fi
+            
+            # Копируем ключ
+            mkdir -p "$(dirname "$KEY_FILE")"
+            cp "$key_path" "$KEY_FILE"
+            chmod 600 "$KEY_FILE"
+            
+            success "Ключ загружен!"
+            echo
+            
+            # Перезапускаем сервис
+            info "Перезапускаю сервис..."
+            systemctl restart "$SERVICE"
+            
+            success "Готово! Проверь логи:"
+            echo "   sudo docker logs -f vps-watchdog"
+            pause
+            ;;
+            
+        2)
+            # Создание через yc CLI
+            if ! command -v yc >/dev/null 2>&1; then
+                error "yc CLI не установлен"
+                pause
+                return
+            fi
+            
+            echo
+            info "Создание Service Account и ключа"
+            echo
+            
+            read -r -p "Folder ID (из yc config list): " folder_id
+            if [[ -z "$folder_id" ]]; then
+                error "Folder ID обязателен"
+                pause
+                return
+            fi
+            
+            read -r -p "Имя Service Account [watchdog]: " sa_name
+            sa_name=${sa_name:-watchdog}
+            
+            info "Создаю Service Account..."
+            sa_id=$(yc iam service-account create --name "$sa_name" --folder-id "$folder_id" --format json 2>/dev/null | jq -r '.id') || {
+                error "Ошибка создания SA"
+                echo "Возможно SA с таким именем уже существует"
+                echo "Попробуй другое имя или используй существующий"
+                pause
+                return
+            }
+            
+            success "Service Account создан: $sa_id"
+            
+            info "Выдаю права..."
+            yc resource-manager folder add-access-binding "$folder_id" \
+                --role compute.operator \
+                --subject "serviceAccount:$sa_id" >/dev/null
+            
+            info "Создаю ключ..."
+            mkdir -p "$(dirname "$KEY_FILE")"
+            yc iam key create --service-account-id "$sa_id" --output "$KEY_FILE" >/dev/null
+            chmod 600 "$KEY_FILE"
+            
+            success "Ключ создан: $KEY_FILE"
+            
+            info "Перезапускаю сервис..."
+            systemctl restart "$SERVICE"
+            
+            success "Готово!"
+            pause
+            ;;
+            
+        0) return ;;
+        *) warn "Неверный выбор"; pause ;;
+    esac
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -815,14 +885,70 @@ get_vm_data_oauth() {
     
     success "Конфигурация обновлена!"
     echo
-    warn "⚠️  Теперь создай Service Account через веб-консоль:"
-    echo "   https://console.cloud.yandex.ru → IAM → Service accounts"
+    
+    # Предлагаем загрузить ключ
+    warn "⚠️  Теперь нужен ключ Service Account"
     echo
-    echo "   1) Создай SA: watchdog"
-    echo "   2) Роль: compute.operator"
-    echo "   3) Создай ключ"
-    echo "   4) Скачай и скопируй:"
-    echo "      scp key.json root@$(hostname -I | awk '{print $1}'):/opt/vps-watchdog/config/sa-key.json"
+    echo "Есть 2 варианта:"
+    echo
+    echo "1️⃣  Создать через веб-консоль (рекомендуется):"
+    echo "   ${CYAN}https://console.cloud.yandex.ru → IAM → Service accounts${NC}"
+    echo "   a) Создай SA: watchdog"
+    echo "   b) Роль: compute.operator"
+    echo "   c) Создай ключ → Скачай"
+    echo
+    echo "2️⃣  Загрузить ключ прямо сейчас (если уже есть)"
+    echo
+    
+    read -r -p "Хочешь загрузить ключ сейчас? (y/n): " upload_key
+    
+    if [[ "$upload_key" == "y" || "$upload_key" == "Y" ]]; then
+        echo
+        info "📤 Загрузка ключа"
+        echo
+        echo "Введи путь к файлу ключа:"
+        echo "(или просто перетащи файл в терминал)"
+        echo
+        read -r -e -p "Путь: " key_path
+        
+        # Убираем возможные кавычки
+        key_path="${key_path//\'/}"
+        key_path="${key_path//\"/}"
+        
+        if [[ ! -f "$key_path" ]]; then
+            error "Файл не найден: $key_path"
+            pause
+            return
+        fi
+        
+        # Проверяем что это JSON
+        if ! jq empty "$key_path" 2>/dev/null; then
+            error "Файл не является валидным JSON"
+            pause
+            return
+        fi
+        
+        # Копируем ключ
+        cp "$key_path" "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+        
+        success "Ключ загружен!"
+        echo
+        
+        # Перезапускаем сервис
+        info "Перезапускаю сервис..."
+        systemctl restart vps-watchdog
+        
+        success "Готово! Проверь логи:"
+        echo "   sudo docker logs -f vps-watchdog"
+    else
+        echo
+        warn "После создания ключа:"
+        echo "   1) Скачай ключ"
+        echo "   2) Запусти меню снова"
+        echo "   3) Выбери пункт 3 (Настроить ключ)"
+        echo "   4) Загрузи ключ"
+    fi
     echo
     
     pause
