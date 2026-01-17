@@ -144,6 +144,7 @@ main_menu() {
         echo "  5) 📜 Показать логи"
         echo "  6) 📡 Проверить ping"
         echo "  7) ℹ️  Помощь"
+        echo "  8) 🔍 Получить данные VM (OAuth)" 
         echo "  0) 🚪 Выход"
         echo
         
@@ -157,6 +158,7 @@ main_menu() {
             5) show_logs ;;
             6) test_ping ;;
             7) show_help ;;
+            8) get_vm_data_oauth ;;
             0) exit 0 ;;
             *) warn "Неверный выбор"; pause ;;
         esac
@@ -551,6 +553,188 @@ test_ping() {
     hr
     ping -c 5 -W 2 "$VM_HOST" || warn "VM не отвечает"
     hr
+    pause
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# ПОЛУЧЕНИЕ ДАННЫХ VM ЧЕРЕЗ OAUTH
+# ═══════════════════════════════════════════════════════════════════
+
+get_vm_data_oauth() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "           🔍 ПОЛУЧЕНИЕ ДАННЫХ VM (OAuth)                    "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    # Проверка зависимостей
+    if ! command -v jq >/dev/null 2>&1; then
+        warn "jq не установлен, пытаюсь установить..."
+        apt-get update -qq && apt-get install -y -qq jq || {
+            error "Не удалось установить jq"
+            pause
+            return
+        }
+    fi
+    
+    # OAuth авторизация
+    info "🌐 АВТОРИЗАЦИЯ ЧЕРЕЗ БРАУЗЕР"
+    hr
+    echo
+    echo "1️⃣  Открой эту ссылку в браузере:"
+    echo
+    echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+    echo
+    echo "2️⃣  Авторизуйся в Yandex"
+    echo "3️⃣  Разреши доступ к Yandex Cloud"
+    echo "4️⃣  Скопируй токен"
+    echo
+    echo -e "${YELLOW}⚠️  Токен выглядит так: y0_AgAAAABabcdef...${NC}"
+    echo
+    
+    read -r -p "Вставь токен: " oauth_token
+    
+    if [[ -z "$oauth_token" ]]; then
+        error "Токен пустой"
+        pause
+        return
+    fi
+    
+    echo
+    success "Токен получен"
+    
+    # Функция для API запросов
+    yc_api() {
+        curl -s -X "$1" \
+            -H "Authorization: Bearer $oauth_token" \
+            -H "Content-Type: application/json" \
+            "$2"
+    }
+    
+    # Получаем список папок
+    echo
+    info "📁 Получаю список папок..."
+    
+    folders=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders")
+    folder_count=$(echo "$folders" | jq '.folders // [] | length')
+    
+    if [[ "$folder_count" -eq 0 ]]; then
+        error "Папки не найдены"
+        warn "Возможно у токена нет прав"
+        pause
+        return
+    fi
+    
+    success "Найдено папок: $folder_count"
+    echo
+    
+    # Показываем папки
+    echo "┌────────────────────────────────────────────────────────────┐"
+    echo "│                    ДОСТУПНЫЕ ПАПКИ                          │"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo
+    
+    i=1
+    declare -A folder_map
+    while IFS= read -r folder; do
+        name=$(echo "$folder" | jq -r '.name')
+        id=$(echo "$folder" | jq -r '.id')
+        
+        folder_map[$i]="$id"
+        
+        echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+        echo "   ID: $id"
+        echo
+        
+        ((i++))
+    done < <(echo "$folders" | jq -c '.folders[]')
+    
+    read -r -p "Выбери номер папки: " folder_choice
+    
+    if [[ ! "$folder_choice" =~ ^[0-9]+$ ]] || [[ -z "${folder_map[$folder_choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    folder_id="${folder_map[$folder_choice]}"
+    success "Выбрана папка: $folder_id"
+    
+    # Получаем список VM
+    echo
+    info "🖥️  Получаю список VM..."
+    
+    vms=$(yc_api GET "https://compute.api.cloud.yandex.net/compute/v1/instances?folderId=$folder_id")
+    vm_count=$(echo "$vms" | jq '.instances // [] | length')
+    
+    if [[ "$vm_count" -eq 0 ]]; then
+        warn "VM не найдены в этой папке"
+        pause
+        return
+    fi
+    
+    success "Найдено VM: $vm_count"
+    echo
+    
+    # Показываем VM
+    echo "┌────────────────────────────────────────────────────────────┐"
+    echo "│                 ДОСТУПНЫЕ ВИРТУАЛЬНЫЕ МАШИНЫ                │"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo
+    
+    i=1
+    declare -A vm_map
+    while IFS= read -r vm; do
+        name=$(echo "$vm" | jq -r '.name')
+        id=$(echo "$vm" | jq -r '.id')
+        status=$(echo "$vm" | jq -r '.status')
+        ip=$(echo "$vm" | jq -r '.networkInterfaces[0].primaryV4Address.oneToOneNat.address // "нет IP"')
+        
+        vm_map[$i]="$id|$ip"
+        
+        echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+        echo "   ID:     $id"
+        echo "   IP:     $ip"
+        echo "   Статус: $status"
+        echo
+        
+        ((i++))
+    done < <(echo "$vms" | jq -c '.instances[]')
+    
+    read -r -p "Выбери номер VM для мониторинга: " vm_choice
+    
+    if [[ ! "$vm_choice" =~ ^[0-9]+$ ]] || [[ -z "${vm_map[$vm_choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    IFS='|' read -r instance_id vm_host <<< "${vm_map[$vm_choice]}"
+    
+    echo
+    success "Выбрана VM:"
+    echo "   Instance ID: $instance_id"
+    echo "   VM Host:     $vm_host"
+    echo
+    
+    # Обновляем конфиг
+    info "Обновляю конфигурацию..."
+    
+    sed -i "s|^VM_HOST=.*|VM_HOST=$vm_host|" "$CONFIG_FILE"
+    sed -i "s|^INSTANCE_ID=.*|INSTANCE_ID=$instance_id|" "$CONFIG_FILE"
+    
+    success "Конфигурация обновлена!"
+    echo
+    warn "⚠️  Теперь создай Service Account через веб-консоль:"
+    echo "   https://console.cloud.yandex.ru → IAM → Service accounts"
+    echo
+    echo "   1) Создай SA: watchdog"
+    echo "   2) Роль: compute.operator"
+    echo "   3) Создай ключ"
+    echo "   4) Скачай и скопируй:"
+    echo "      scp key.json root@$(hostname -I | awk '{print $1}'):/opt/vps-watchdog/config/sa-key.json"
+    echo
+    
     pause
 }
 
