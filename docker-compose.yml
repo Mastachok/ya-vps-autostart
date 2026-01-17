@@ -1,31 +1,19 @@
 services:
-  vps-watchdog:
+  watchdog:
     build: ./app
     container_name: vps-watchdog
     restart: unless-stopped
     env_file:
-      - .env
+      - ./config/watchdog.env
     volumes:
-      - ./profiles:/app/profiles:ro
-    # Ограничения ресурсов (опционально)
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
-    # Логирование
+      - ./config:/app/config:ro
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-    # Healthcheck (опционально)
-    healthcheck:
-      test: ["CMD", "pgrep", "-f", "python"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
