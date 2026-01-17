@@ -442,15 +442,10 @@ add_profile_oauth() {
     
     mkdir -p "$PROFILES_DIR"
     
-    # Генерируем уникальный ID
+        # Генерируем уникальный ID
     profile_id=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 8 | head -n 1)
     profile_file="$PROFILES_DIR/${profile_id}.json"
     
-    
-' "$profile_id" "$vm_name" "$vm_host" "$instance_id" "$folder_id" "$(date -Iseconds)" "$(date -Iseconds)" > "$profile_file"
-EOF
-```bash
-    # Создаём профиль
     cat > "$profile_file" <<EOF
 {
   "id": "$profile_id",
@@ -468,9 +463,8 @@ EOF
   "updated_at": "$(date -Iseconds)"
 }
 EOF
-```
+    
     success "Профиль создан!"
-    echo
     
     # Перезапускаем сервис
     info "🔄 Перезапускаю сервис..."
