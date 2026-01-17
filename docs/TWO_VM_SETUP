@@ -1,0 +1,251 @@
+# 🎯 VPS Watchdog - Правильная схема установки
+
+## 📍 АРХИТЕКТУРА: Watchdog следит за Yandex Cloud VM
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              ЛЮБОЙ ХОСТИНГ                  YANDEX CLOUD        │
+│         (Hetzner, AWS, DigitalOcean,                            │
+│          даже домашний сервер)                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  🟢 WATCHDOG СЕРВЕР                🔴 VM В YANDEX CLOUD          │
+│  51.250.117.71                     158.160.75.118              │
+│  (любой хостинг!)                  (может падать)              │
+│                                                                 │
+│  ┌──────────────────────┐          ┌──────────────────────┐    │
+│  │                      │          │                      │    │
+│  │  VPS Watchdog        │──ping───▶│  Твой сервис         │    │
+│  │                      │          │                      │    │
+│  │  Следит за VM        │          │  Может падать        │    │
+│  │  в Yandex Cloud      │          │                      │    │
+│  │                      │──API────▶│  ◀── Запуск          │    │
+│  │                      │ start    │                      │    │
+│  └──────────────────────┘          └──────────────────────┘    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Важно:**
+- ✅ Watchdog может быть на **любом** хостинге
+- ✅ Мониторимая VM должна быть в **Yandex Cloud**
+- ✅ Watchdog управляет через **Yandex Cloud API**
+
+---
+
+## 🎯 ЧТО КУДА УСТАНАВЛИВАТЬ
+
+### 🟢 На WATCHDOG СЕРВЕРЕ (может быть где угодно!)
+
+**Где:** Любой стабильный сервер (Hetzner, AWS, DigitalOcean, домашний сервер, даже другая VM в Yandex Cloud)
+
+**Требования:**
+- Ubuntu/Debian/любой Linux
+- Доступ к интернету
+- Может пинговать Yandex Cloud VM
+- Docker установлен (или установится автоматически)
+
+Здесь будет **следить** за Yandex Cloud VM и **запускать** её если упала.
+
+**Установи:**
+1. VPS Watchdog
+2. Docker (установится автоматически)
+3. Конфигурацию с данными Yandex Cloud VM
+
+---
+
+### 🔴 На YANDEX CLOUD VM (мониторимая)
+
+**Где:** Yandex Cloud (та VM которая может падать)
+
+**Ничего не нужно!**  
+Просто работает как обычно, watchdog следит за ней извне.
+
+---
+
+## 📋 ПОШАГОВАЯ УСТАНОВКА
+
+### Шаг 1: На WATCHDOG СЕРВЕРЕ - получи данные о Yandex Cloud VM
+
+Зайди на **watchdog сервер** (тот который будет следить) и запусти скрипт:
+
+```bash
+# На watchdog сервере:
+curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/bin/get-vm-data -o get-vm-data
+chmod +x get-vm-data
+./get-vm-data
+```
+
+Скрипт покажет все VM в Yandex Cloud и попросит выбрать.  
+**Выбери ту VM которую нужно мониторить!** (158.160.75.118)
+
+Получишь:
+```
+VM_HOST=158.160.75.118
+INSTANCE_ID=epduvd41hfntv8cangem
+SA_KEY_FILE=/tmp/watchdog-key-XXX.json
+```
+
+---
+
+### Шаг 2: На WATCHDOG СЕРВЕРЕ - установи watchdog
+
+```bash
+# Установи watchdog
+curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/install.sh | sudo bash
+```
+
+---
+
+### Шаг 3: На WATCHDOG СЕРВЕРЕ - скопируй ключ
+
+Ключ уже на этой же машине, просто скопируй:
+
+```bash
+# Ключ уже есть в /tmp/watchdog-key-XXX.json
+# Скопируй его в нужное место:
+sudo cp /tmp/watchdog-key-1768639947.json /opt/vps-watchdog/config/sa-key.json
+sudo chmod 600 /opt/vps-watchdog/config/sa-key.json
+```
+
+---
+
+### Шаг 4: На WATCHDOG СЕРВЕРЕ - настрой конфиг
+
+```bash
+# Открой конфиг
+sudo nano /opt/vps-watchdog/config/watchdog.env
+
+# Впиши данные Yandex Cloud VM:
+VM_HOST=158.160.75.118
+INSTANCE_ID=epduvd41hfntv8cangem
+
+# Сохрани: Ctrl+O, Enter, Ctrl+X
+```
+
+---
+
+### Шаг 5: На WATCHDOG СЕРВЕРЕ - запусти watchdog
+
+```bash
+# Перезапусти сервис
+sudo systemctl restart vps-watchdog
+
+# Проверь логи
+sudo docker logs -f vps-watchdog
+```
+
+**Должен увидеть:**
+```
+2026-01-17 10:00:00 [INFO] ═══════════════════════════════════════════
+2026-01-17 10:00:00 [INFO] 🛡️  VPS WATCHDOG - Конфигурация
+2026-01-17 10:00:00 [INFO] ═══════════════════════════════════════════
+2026-01-17 10:00:00 [INFO] 🌐 VM Host:             158.160.75.118
+2026-01-17 10:00:00 [INFO] 🆔 Instance ID:         epduvd41hfntv8cangem
+2026-01-17 10:00:00 [INFO] ✅ Конфигурация валидна
+2026-01-17 10:00:00 [INFO] 🚀 Запуск мониторинга...
+2026-01-17 10:00:01 [INFO] ✅ VM 158.160.75.118 доступна
+```
+
+---
+
+## ✅ ГОТОВО!
+
+Теперь:
+- **Watchdog сервер** (любой хостинг) следит за **Yandex Cloud VM** (158.160.75.118)
+- Если Yandex Cloud VM упадёт - watchdog автоматически запустит её через Yandex Cloud API
+- Yandex Cloud VM ничего не знает про watchdog и работает как обычно
+
+---
+
+## 🔍 КАК ЭТО РАБОТАЕТ
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ ЦИКЛ МОНИТОРИНГА                                               │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  1. VM #2 каждые 60 секунд пингует VM #1                      │
+│     ping 158.160.75.118                                        │
+│                                                                │
+│  2. Если VM #1 отвечает:                                       │
+│     ✅ Всё хорошо, жду следующей проверки                      │
+│                                                                │
+│  3. Если VM #1 НЕ отвечает:                                    │
+│     ❌ Обнаружена проблема!                                    │
+│     🔍 Проверяю статус через Yandex Cloud API                  │
+│     🚀 Запускаю VM #1 через API                                │
+│     ⏳ Жду 5 минут (cooldown)                                  │
+│     🔄 Продолжаю мониторинг                                    │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🎓 КРАТКАЯ ПАМЯТКА
+
+### Где устанавливать watchdog?
+**На стабильный сервер** (любой хостинг: Hetzner, AWS, DigitalOcean, домашний сервер)
+
+### Какую VM мониторить?
+**VM в Yandex Cloud** (которая может падать)
+
+### Где запускать get-vm-data?
+**На watchdog сервере** (там где установлен watchdog)
+
+### Что вписывать в конфиг?
+**Данные Yandex Cloud VM** (которую мониторим)
+
+---
+
+## 📝 КОМАНДЫ ДЛЯ КОПИРОВАНИЯ
+
+Всё на **watchdog сервере** (любой хостинг):
+
+```bash
+# 1. Получи данные
+curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/bin/get-vm-data -o get-vm-data
+chmod +x get-vm-data
+./get-vm-data
+# Выбери Yandex Cloud VM (158.160.75.118)
+
+# 2. Установи watchdog
+curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/install.sh | sudo bash
+
+# 3. Скопируй ключ
+sudo cp /tmp/watchdog-key-*.json /opt/vps-watchdog/config/sa-key.json
+sudo chmod 600 /opt/vps-watchdog/config/sa-key.json
+
+# 4. Настрой конфиг
+sudo nano /opt/vps-watchdog/config/watchdog.env
+# VM_HOST=158.160.75.118
+# INSTANCE_ID=epduvd41hfntv8cangem
+
+# 5. Запусти
+sudo systemctl restart vps-watchdog
+sudo docker logs -f vps-watchdog
+```
+
+---
+
+## ❓ FAQ
+
+### В: Watchdog должен быть в Yandex Cloud?
+**О:** НЕТ! Watchdog может быть на **любом** хостинге. Главное - интернет и Docker.
+
+### В: А если watchdog сервер упадёт?
+**О:** Тогда некому будет мониторить Yandex Cloud VM. Поэтому watchdog сервер должен быть максимально стабильным.
+
+### В: Можно watchdog на домашнем компьютере?
+**О:** Да! Если у него стабильный интернет и он всегда включен.
+
+### В: Нужно ли что-то устанавливать на Yandex Cloud VM?
+**О:** Нет! Yandex Cloud VM работает как обычно, watchdog следит за ней извне.
+
+### В: Watchdog может быть в другой стране?
+**О:** Да! Главное чтобы он мог пинговать Yandex Cloud VM и обращаться к Yandex Cloud API.
+
+---
+
+Всё просто: **Стабильный сервер (где угодно) следит за Yandex Cloud VM!** 🎯
