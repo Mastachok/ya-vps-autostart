@@ -1,258 +1,189 @@
-# 🛡️ VPS Watchdog — автозапуск ВМ (Yandex Cloud)
+# 🛡️ VPS Watchdog v2.0
 
-Автоматический мониторинг и запуск виртуальных машин в Yandex Cloud.
+**Простой и надёжный автозапуск виртуальных машин в Yandex Cloud**
 
-## 📋 Что это делает?
-
-- **Пингует** вашу ВМ по внешнему IP
-- **Автоматически запускает** ВМ через Yandex Cloud API, если она не отвечает
-- **Поддерживает несколько профилей** для управления разными ВМ
-- **Защита от частых перезапусков** (настраиваемый cooldown период)
-- **Детальное логирование** всех действий
+Следит за твоей VM и автоматически запускает её если она упала.
 
 ---
 
-## ⚡ Быстрая установка (1 команда)
+## ✨ Возможности
+
+✅ Автоматический мониторинг VM по ping  
+✅ Запуск VM через Yandex Cloud API  
+✅ Защита от частых перезапусков (cooldown)  
+✅ Детальное логирование  
+✅ Простое меню для настройки  
+✅ Работает в Docker  
+
+---
+
+## ⚡ Установка (1 команда)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/install.sh | sudo bash
 ```
 
-После установки запусти:
+---
+
+## 🚀 Быстрый старт
+
+После установки:
 
 ```bash
 sudo vps-watchdog
 ```
 
-И следуй мастеру быстрой настройки!
+Выбери **"1) Быстрая настройка"** и следуй инструкциям! 🎯
 
 ---
 
-## 🎯 Требования
+## 📋 Что нужно подготовить?
 
-- Ubuntu/Debian сервер (где будет запущен watchdog)
-- Docker и Docker Compose (устанавливаются автоматически)
-- Yandex Cloud CLI (`yc`) — [инструкция по установке](https://cloud.yandex.ru/docs/cli/quickstart)
-- Service Account с ролью `compute.operator` в Yandex Cloud
-
----
-
-## 🚀 Пошаговая настройка
-
-### 1. Установка
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/install.sh | sudo bash
-```
-
-### 2. Запуск мастера настройки
-
-```bash
-sudo vps-watchdog
-```
-
-Выбери **"Быстрая настройка"** и следуй инструкциям.
-
-### 3. Что понадобится?
-
-- **VM_HOST** — внешний IP адрес твоей ВМ в Yandex Cloud
-- **INSTANCE_ID** — UUID виртуальной машины (получить: `yc compute instance list`)
-- **Folder ID** — ID папки в Yandex Cloud (получить: `yc config list`)
+1. **VM_HOST** - внешний IP адрес твоей VM
+2. **INSTANCE_ID** - UUID VM в Yandex Cloud  
+   Получить: `yc compute instance list`
+3. **yc CLI** - установленный и настроенный  
+   Установка: [yandex.cloud/docs/cli](https://cloud.yandex.ru/docs/cli/quickstart)
 
 ---
 
-## 📁 Управление профилями
+## 🎮 Управление
 
-Watchdog поддерживает несколько профилей для управления разными ВМ.
-
-### Создать новый профиль:
+### Главное меню
 
 ```bash
 sudo vps-watchdog
-# → Профили → Создать профиль
 ```
 
-### Переключить активный профиль:
+Доступные команды:
+- 🚀 **Быстрая настройка** - автоматическая настройка за 2 минуты
+- ⚙️ **Настроить конфигурацию** - ручная настройка параметров
+- 🔑 **Настроить ключ** - создание Service Account
+- 🔧 **Управление сервисом** - запуск/остановка/перезапуск
+- 📜 **Показать логи** - просмотр логов в реальном времени
+- 📡 **Проверить ping** - тест доступности VM
+
+### Управление через systemctl
 
 ```bash
-sudo vps-watchdog
-# → Профили → Переключить активный профиль
-```
-
-### Настройки профиля:
-
-Каждый профиль содержит:
-- `VM_HOST` — IP адрес ВМ для мониторинга
-- `INSTANCE_ID` — UUID ВМ в Yandex Cloud
-- `CHECK_INTERVAL` — интервал проверки (секунды)
-- `PING_ATTEMPTS` — количество попыток ping
-- `PING_TIMEOUT` — таймаут ping (секунды)
-- `COOLDOWN_MINUTES` — время ожидания между попытками запуска (минуты)
-
----
-
-## 🔧 Управление сервисом
-
-### Через меню:
-
-```bash
-sudo vps-watchdog
-# → Сервис
-```
-
-### Через systemctl:
-
-```bash
-# Запустить
+# Запуск
 sudo systemctl start vps-watchdog
 
-# Остановить
+# Остановка
 sudo systemctl stop vps-watchdog
 
-# Перезапустить
+# Перезапуск
 sudo systemctl restart vps-watchdog
 
 # Статус
 sudo systemctl status vps-watchdog
-```
 
-### Просмотр логов:
-
-```bash
-sudo vps-watchdog
-# → Логи watchdog
-
-# Или напрямую:
+# Логи
 sudo docker logs -f vps-watchdog
 ```
 
 ---
 
-## 🔑 Service Account и ключи
+## ⚙️ Настройки
 
-Для работы watchdog нужен Service Account с правами `compute.operator`.
+Все настройки в одном файле: `/opt/vps-watchdog/config/watchdog.env`
+
+```bash
+# Основное
+VM_HOST=1.2.3.4                    # IP адрес VM
+INSTANCE_ID=fhm...                 # ID VM в Yandex Cloud
+
+# Мониторинг
+CHECK_INTERVAL=60                  # Интервал проверки (секунды)
+PING_COUNT=3                       # Количество ping
+PING_TIMEOUT=5                     # Таймаут ping (секунды)
+
+# Защита
+COOLDOWN_MINUTES=5                 # Время между попытками запуска
+MAX_START_ATTEMPTS=3               # Макс. попыток подряд
+```
+
+---
+
+## 🔑 Service Account
+
+Для работы нужен Service Account с ролью `compute.operator`.
 
 ### Создание через меню (рекомендуется):
 
 ```bash
 sudo vps-watchdog
-# → Yandex Cloud → Создать Service Account + Key
+# → пункт 3 (Настроить ключ)
 ```
 
-### Вручную:
+### Создание вручную:
 
 ```bash
-# 1. Создать Service Account
-yc iam service-account create --name watchdog-my-vm --folder-id YOUR_FOLDER_ID
+# 1. Создать SA
+yc iam service-account create --name watchdog --folder-id YOUR_FOLDER_ID
 
 # 2. Выдать права
 yc resource-manager folder add-access-binding YOUR_FOLDER_ID \
   --role compute.operator \
-  --subject serviceAccount:SERVICE_ACCOUNT_ID
+  --subject serviceAccount:SA_ID
 
 # 3. Создать ключ
 yc iam key create \
-  --service-account-id SERVICE_ACCOUNT_ID \
-  --output /opt/vps-watchdog/profiles/my-profile.sa-key.json
+  --service-account-id SA_ID \
+  --output /opt/vps-watchdog/config/sa-key.json
 ```
 
 ---
 
-## 📊 Мониторинг и диагностика
+## 📊 Примеры логов
 
-### Проверить статус:
-
-```bash
-sudo vps-watchdog
 ```
-
-Главный экран показывает:
-- Активный профиль
-- Состояние сервиса
-- Статус контейнера
-- Доступность ВМ (ping)
-- Наличие ключа доступа
-
-### Проверить ping вручную:
-
-```bash
-sudo vps-watchdog
-# → Проверить ping
-```
-
-### Посмотреть логи:
-
-```bash
-# Последние 100 строк
-sudo docker logs --tail=100 vps-watchdog
-
-# В режиме реального времени
-sudo docker logs -f vps-watchdog
+2026-01-17 10:00:00 [INFO] ═══════════════════════════════════════════
+2026-01-17 10:00:00 [INFO] 🛡️  VPS WATCHDOG - Конфигурация
+2026-01-17 10:00:00 [INFO] ═══════════════════════════════════════════
+2026-01-17 10:00:00 [INFO] 🌐 VM Host:             1.2.3.4
+2026-01-17 10:00:00 [INFO] 🆔 Instance ID:         fhm1234567890
+2026-01-17 10:00:00 [INFO] ✅ Конфигурация валидна
+2026-01-17 10:00:00 [INFO] 🚀 Запуск мониторинга...
+2026-01-17 10:00:01 [INFO] ✅ VM 1.2.3.4 доступна
+2026-01-17 10:01:01 [WARNING] ❌ VM 1.2.3.4 НЕ отвечает (попытка 1)
+2026-01-17 10:01:01 [INFO] 🚀 Попытка #1 запустить VM...
+2026-01-17 10:01:01 [INFO]    Текущий статус: STOPPED
+2026-01-17 10:01:02 [INFO]    ✅ VM запускается
+2026-01-17 10:01:02 [INFO] ⏳ Cooldown установлен на 5 минут
 ```
 
 ---
 
-## 🛠️ Структура проекта
+## ❓ FAQ
 
-```
-/opt/vps-watchdog/
-├── app/                    # Docker приложение
-│   ├── Dockerfile
-│   ├── monitor.py         # Основной скрипт мониторинга
-│   ├── yc_api.py          # Работа с Yandex Cloud API
-│   └── requirements.txt
-├── bin/
-│   └── vps-watchdog       # CLI меню
-├── profiles/              # Профили конфигурации
-│   ├── default.env
-│   ├── default.sa-key.json
-│   └── ...
-├── docker-compose.yml
-└── .env                   # Активный профиль
-```
-
----
-
-## ❓ Частые вопросы
-
-### Watchdog не запускает ВМ
+### VM не запускается?
 
 1. Проверь логи: `sudo docker logs vps-watchdog`
-2. Убедись, что Service Account создан и ключ валиден: меню → Yandex Cloud → Проверить ключ
-3. Проверь права SA: должна быть роль `compute.operator`
+2. Проверь ключ: меню → пункт 3 → проверить ключ
+3. Убедись что SA имеет роль `compute.operator`
 
-### ВМ постоянно перезапускается
+### Где взять INSTANCE_ID?
 
-1. Увеличь `COOLDOWN_MINUTES` в профиле
-2. Проверь, что ВМ действительно запускается (консоль Yandex Cloud)
-3. Проверь, нет ли проблем с сетью на ВМ
+```bash
+yc compute instance list
+```
 
-### Как добавить вторую ВМ?
+### Как изменить интервал проверки?
 
 ```bash
 sudo vps-watchdog
-# → Профили → Создать профиль
-# → Профили → Переключить активный профиль
-# → Yandex Cloud → Создать Service Account + Key
+# → пункт 2 (Настроить конфигурацию)
+# → измени CHECK_INTERVAL
 ```
 
-### Как обновить watchdog?
+### VM постоянно перезапускается?
 
-```bash
-sudo vps-watchdog
-# → Обновиться из GitHub
-```
+Увеличь `COOLDOWN_MINUTES` в конфигурации.
 
 ---
 
 ## 🔄 Обновление
-
-```bash
-sudo vps-watchdog
-# → Обновиться из GitHub
-```
-
-Или вручную:
 
 ```bash
 cd /opt/vps-watchdog
@@ -266,13 +197,6 @@ sudo systemctl restart vps-watchdog
 ## 🗑️ Удаление
 
 ```bash
-sudo vps-watchdog
-# → Удалить программу
-```
-
-Или вручную:
-
-```bash
 sudo systemctl stop vps-watchdog
 sudo systemctl disable vps-watchdog
 sudo rm -f /etc/systemd/system/vps-watchdog.service
@@ -283,36 +207,27 @@ sudo systemctl daemon-reload
 
 ---
 
-## 📝 Логи и отладка
-
-### Уровни логирования
-
-Watchdog пишет подробные логи:
-- `INFO` — обычные операции (ping OK/DOWN, попытки запуска)
-- `WARNING` — предупреждения (cooldown активен, конфигурация)
-- `ERROR` — ошибки (API errors, проблемы с ключом)
-
-### Примеры логов
+## 📝 Структура проекта
 
 ```
-2024-01-17 12:00:00 [INFO] ✅ VM 1.2.3.4 is UP
-2024-01-17 12:01:00 [WARNING] ❌ VM 1.2.3.4 is DOWN (attempt 1)
-2024-01-17 12:01:00 [INFO] 🚀 Attempting to start instance fhm...
-2024-01-17 12:01:01 [INFO] Getting IAM token...
-2024-01-17 12:01:02 [INFO] IAM token obtained successfully
-2024-01-17 12:01:02 [INFO] Sending start command...
-2024-01-17 12:01:03 [INFO] ✅ Start command sent successfully (status: STARTING)
-2024-01-17 12:01:03 [INFO] ⏳ Cooldown set for 5 minutes
+/opt/vps-watchdog/
+├── app/
+│   ├── monitor.py          # Основной скрипт мониторинга
+│   └── Dockerfile
+├── bin/
+│   └── vps-watchdog        # CLI меню
+├── config/
+│   ├── watchdog.env        # Конфигурация
+│   └── sa-key.json         # Ключ Service Account
+└── docker-compose.yml
 ```
 
 ---
 
-## 🔐 Безопасность
+## 🤝 Поддержка
 
-- Service Account ключи хранятся с правами `600` (только root)
-- Контейнер работает от непривилегированного пользователя
-- Все API запросы используют TLS
-- Ключи не попадают в логи
+Нашёл баг? Есть предложение?  
+Создай [Issue на GitHub](https://github.com/Mastachok/ya-vps-autostart/issues)
 
 ---
 
@@ -322,12 +237,4 @@ MIT License
 
 ---
 
-## 🤝 Поддержка
-
-Если нашёл баг или есть предложения — создай [Issue](https://github.com/Mastachok/ya-vps-autostart/issues) на GitHub.
-
----
-
-## 🎉 Благодарности
-
-Спасибо за использование VPS Watchdog!
+**Made with ❤️ for simple VM management**
