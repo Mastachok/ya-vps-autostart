@@ -2,13 +2,16 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════
-# VPS Watchdog v2.0 - Управление
+# VPS WATCHDOG v3.0 - Интерактивное меню
 # ═══════════════════════════════════════════════════════════════════
 
-APP_DIR="/opt/vps-watchdog"
-CONFIG_FILE="$APP_DIR/config/watchdog.env"
-KEY_FILE="$APP_DIR/config/sa-key.json"
-SERVICE="vps-watchdog.service"
+VERSION="3.0.0"
+CONFIG_DIR="/opt/vps-watchdog/config"
+PROFILES_DIR="/opt/vps-watchdog/profiles"
+DATA_DIR="/opt/vps-watchdog/data"
+KEY_FILE="$CONFIG_DIR/sa-key.json"
+TELEGRAM_CONFIG="$CONFIG_DIR/telegram.json"
+SERVICE="vps-watchdog"
 
 # Цвета
 RED='\033[0;31m'
@@ -16,99 +19,77 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-GRAY='\033[0;90m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
+GRAY='\033[0;90m'
 NC='\033[0m'
 
-# Функции вывода
-info() { echo -e "${CYAN}ℹ️  $*${NC}"; }
-success() { echo -e "${GREEN}✅ $*${NC}"; }
-error() { echo -e "${RED}❌ $*${NC}"; }
-warn() { echo -e "${YELLOW}⚠️  $*${NC}"; }
-title() { echo -e "${BOLD}${BLUE}$*${NC}"; }
-hr() { echo -e "${GRAY}════════════════════════════════════════════════════════════${NC}"; }
+# ═══════════════════════════════════════════════════════════════════
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ═══════════════════════════════════════════════════════════════════
 
-# Проверка root
-need_root() {
-    if [[ $EUID -ne 0 ]]; then
-        error "Запусти с sudo: sudo vps-watchdog"
-        exit 1
-    fi
+title() {
+    echo -e "${CYAN}${BOLD}$1${NC}"
 }
 
-# Пауза
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+hr() {
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
 pause() {
     echo
-    read -r -p "Нажми Enter для продолжения..." _
+    read -r -p "Нажми Enter для продолжения..."
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# ЗАГРУЗКА КОНФИГУРАЦИИ
-# ═══════════════════════════════════════════════════════════════════
-
-load_config() {
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE" 2>/dev/null || true
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# ПРОВЕРКА СТАТУСОВ
-# ═══════════════════════════════════════════════════════════════════
-
-check_service_status() {
-    if systemctl is-active --quiet "$SERVICE"; then
-        echo -e "${GREEN}работает${NC}"
-    else
-        echo -e "${RED}остановлен${NC}"
-    fi
-}
-
-check_container_status() {
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "vps-watchdog"; then
-        echo -e "${GREEN}работает${NC}"
-    else
-        echo -e "${RED}остановлен${NC}"
-    fi
-}
-
-check_config_status() {
-    if [[ -f "$CONFIG_FILE" ]] && [[ -s "$CONFIG_FILE" ]]; then
-        load_config
-        if [[ -n "${VM_HOST:-}" ]] && [[ -n "${INSTANCE_ID:-}" ]]; then
-            echo -e "${GREEN}настроен${NC}"
-        else
-            echo -e "${YELLOW}не заполнен${NC}"
-        fi
-    else
-        echo -e "${RED}отсутствует${NC}"
-    fi
-}
-
-check_key_status() {
-    if [[ -f "$KEY_FILE" ]] && [[ -s "$KEY_FILE" ]]; then
-        if jq empty "$KEY_FILE" >/dev/null 2>&1; then
-            echo -e "${GREEN}есть${NC}"
-        else
-            echo -e "${YELLOW}невалидный${NC}"
-        fi
-    else
-        echo -e "${RED}нет${NC}"
-    fi
-}
-
-check_ping_status() {
-    load_config
-    if [[ -z "${VM_HOST:-}" ]]; then
-        echo -e "${GRAY}не настроено${NC}"
+count_profiles() {
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        echo "0 0"
         return
     fi
-    
-    if timeout 3 ping -c 1 -W 1 "${VM_HOST}" >/dev/null 2>&1; then
-        echo -e "${GREEN}отвечает${NC}"
+    local total=$(find "$PROFILES_DIR" -name "*.json" 2>/dev/null | wc -l)
+    local enabled=0
+    for file in "$PROFILES_DIR"/*.json 2>/dev/null; do
+        [[ -f "$file" ]] || continue
+        if jq -e '.enabled == true' "$file" >/dev/null 2>&1; then
+            ((enabled++))
+        fi
+    done
+    echo "$total $enabled"
+}
+
+get_service_status() {
+    if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo -e "${GREEN}работает${NC}"
     else
-        echo -e "${RED}не отвечает${NC}"
+        echo -e "${RED}остановлен${NC}"
+    fi
+}
+
+get_telegram_status() {
+    if [[ -f "$TELEGRAM_CONFIG" ]]; then
+        if jq -e '.enabled == true' "$TELEGRAM_CONFIG" >/dev/null 2>&1; then
+            echo -e "${GREEN}подключен${NC}"
+        else
+            echo -e "${YELLOW}отключен${NC}"
+        fi
+    else
+        echo -e "${GRAY}не настроен${NC}"
     fi
 }
 
@@ -119,527 +100,128 @@ check_ping_status() {
 main_menu() {
     while true; do
         clear
-        load_config
+        read -r total enabled < <(count_profiles)
         
         title "═══════════════════════════════════════════════════════════════"
-        title "        🛡️  VPS WATCHDOG - Автозапуск VM в Yandex Cloud        "
+        title "           🛡️  VPS WATCHDOG v${VERSION}                        "
         title "═══════════════════════════════════════════════════════════════"
         echo
         
         info "📊 СТАТУС:"
-        echo -e "   🌐 VM Host:      ${VM_HOST:-${GRAY}не указан${NC}}"
-        echo -e "   🆔 Instance ID:  ${INSTANCE_ID:-${GRAY}не указан${NC}}"
-        echo -e "   📝 Конфигурация: $(check_config_status)"
-        echo -e "   🔑 Ключ SA:      $(check_key_status)"
-        echo -e "   ⚙️  Сервис:       $(check_service_status)"
-        echo -e "   🐳 Контейнер:    $(check_container_status)"
-        echo -e "   📡 Ping VM:      $(check_ping_status)"
+        echo -e "   📝 Профилей: ${BOLD}$total${NC} (активных: ${GREEN}$enabled${NC})"
+        echo -e "   ⚙️  Сервис: $(get_service_status)"
+        echo -e "   📱 Telegram: $(get_telegram_status)"
         
         hr
         echo
-        echo "  1) 🚀 Быстрая настройка (для новичков)"
-        echo "  2) ⚙️  Настроить конфигурацию"
-        echo "  3) 🔑 Настроить ключ Service Account"
-        echo "  4) 🔧 Управление сервисом"
-        echo "  5) 📜 Показать логи"
-        echo "  6) 📡 Проверить ping"
-        echo "  7) ℹ️  Помощь"
-        echo "  8) 🔍 Получить данные VM (OAuth)" 
-        echo "  0) 🚪 Выход"
+        echo -e "${BOLD}📋 УПРАВЛЕНИЕ ПРОФИЛЯМИ:${NC}"
+        echo "  1) 📝 Список профилей"
+        echo "  2) ➕ Добавить профиль (OAuth)"
+        echo "  3) ✏️  Редактировать профиль"
+        echo "  4) 🗑️  Удалить профиль"
+        echo "  5) 🔄 Включить/выключить мониторинг"
+        echo
+        echo -e "${BOLD}📱 TELEGRAM:${NC}"
+        echo "  6) 🤖 Настроить бота"
+        echo "  7) 📤 Тест уведомления"
+        echo "  8) 📊 Статус бота"
+        echo
+        echo -e "${BOLD}⚙️  СИСТЕМА:${NC}"
+        echo "  9) 🔧 Управление сервисом"
+        echo "  10) 📜 Показать логи"
+        echo "  11) 📈 Статистика"
+        echo
+        echo -e "${BOLD}ℹ️  ИНФОРМАЦИЯ:${NC}"
+        echo "  0) ❓ Помощь"
+        echo "  q) 🚪 Выход"
         echo
         
         read -r -p "Выбери пункт: " choice
         
         case $choice in
-            1) quick_setup ;;
-            2) config_menu ;;
-            3) setup_key ;;
-            4) service_menu ;;
-            5) show_logs ;;
-            6) test_ping ;;
-            7) show_help ;;
-            8) get_vm_data_oauth ;;
-            0) exit 0 ;;
+            1) list_profiles ;;
+            2) add_profile_oauth ;;
+            3) edit_profile ;;
+            4) delete_profile ;;
+            5) toggle_profile ;;
+            6) setup_telegram ;;
+            7) test_telegram ;;
+            8) telegram_status ;;
+            9) service_menu ;;
+            10) show_logs ;;
+            11) show_stats ;;
+            0) show_help ;;
+            q|Q) exit 0 ;;
             *) warn "Неверный выбор"; pause ;;
         esac
     done
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# БЫСТРАЯ НАСТРОЙКА
+# УПРАВЛЕНИЕ ПРОФИЛЯМИ
 # ═══════════════════════════════════════════════════════════════════
 
-quick_setup() {
+list_profiles() {
     clear
     title "═══════════════════════════════════════════════════════════════"
-    title "           🚀 БЫСТРАЯ НАСТРОЙКА (для новичков)               "
+    title "                     📝 СПИСОК ПРОФИЛЕЙ                        "
     title "═══════════════════════════════════════════════════════════════"
     echo
     
-    info "Этот мастер проведёт тебя через все шаги настройки."
-    info "Тебе понадобится:"
-    echo "  • VM_HOST - внешний IP твоей VM"
-    echo "  • INSTANCE_ID - ID VM в Yandex Cloud"
-    echo "  • yc CLI установленный и настроенный"
-    echo
-    pause
-    
-    # Шаг 1: Проверка yc
-    clear
-    title "Шаг 1/4: Проверка Yandex Cloud CLI"
-    hr
-    echo
-    
-    if ! command -v yc >/dev/null 2>&1; then
-        warn "yc CLI не установлен"
+    if [[ ! -d "$PROFILES_DIR" ]] || [[ -z "$(ls -A "$PROFILES_DIR"/*.json 2>/dev/null)" ]]; then
+        warn "Нет профилей"
         echo
-        echo "Установи командой:"
-        echo "  curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash"
-        echo "  source ~/.bashrc"
+        info "Добавь профиль через пункт 2 (Добавить профиль)"
         pause
         return
     fi
     
-    success "yc CLI установлен"
+    echo "┌────────────────────────────────────────────────────────────────┐"
+    echo "│                         ПРОФИЛИ VM                              │"
+    echo "└────────────────────────────────────────────────────────────────┘"
+    echo
     
-    if ! yc config list >/dev/null 2>&1; then
-        warn "yc CLI не настроен"
+    local i=1
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        
+        local name=$(jq -r '.name' "$file")
+        local vm_host=$(jq -r '.vm_host' "$file")
+        local instance_id=$(jq -r '.instance_id' "$file")
+        local enabled=$(jq -r '.enabled' "$file")
+        local check_interval=$(jq -r '.check_interval' "$file")
+        
+        local status_icon="🔴"
+        local status_text="выключен"
+        if [[ "$enabled" == "true" ]]; then
+            status_icon="🟢"
+            status_text="${GREEN}включен${NC}"
+        fi
+        
+        echo -e "${BOLD}$i) $status_icon $name${NC}"
+        echo "   IP:       $vm_host"
+        echo "   ID:       ${instance_id:0:20}..."
+        echo -e "   Статус:   $status_text"
+        echo "   Интервал: ${check_interval}с"
         echo
-        info "Запускаю yc init..."
-        pause
-        yc init || true
-    fi
+        
+        ((i++))
+    done
     
-    if yc config list >/dev/null 2>&1; then
-        success "yc CLI настроен"
-    else
-        error "yc CLI всё ещё не настроен"
-        pause
-        return
-    fi
-    
-    pause
-    
-    # Шаг 2: Конфигурация
-    clear
-    title "Шаг 2/4: Настройка конфигурации"
-    hr
-    echo
-    
-    info "Получить INSTANCE_ID:"
-    echo "  yc compute instance list"
-    echo
-    
-    read -r -p "Введи VM_HOST (внешний IP VM): " vm_host
-    read -r -p "Введи INSTANCE_ID (UUID VM): " instance_id
-    
-    if [[ -z "$vm_host" ]] || [[ -z "$instance_id" ]]; then
-        error "VM_HOST и INSTANCE_ID обязательны"
-        pause
-        return
-    fi
-    
-    # Создаём конфиг
-    cat > "$CONFIG_FILE" <<EOF
-# VPS Watchdog Configuration
-VM_HOST=$vm_host
-INSTANCE_ID=$instance_id
-SA_KEY_FILE=/app/config/sa-key.json
-
-CHECK_INTERVAL=60
-PING_COUNT=3
-PING_TIMEOUT=5
-COOLDOWN_MINUTES=5
-MAX_START_ATTEMPTS=3
-EOF
-    
-    success "Конфигурация сохранена"
-    pause
-    
-    # Шаг 3: Service Account
-    clear
-    title "Шаг 3/4: Создание Service Account и ключа"
-    hr
-    echo
-    
-    info "Сейчас создам Service Account для управления VM"
-    echo
-    
-    read -r -p "Folder ID (из yc config list): " folder_id
-    
-    if [[ -z "$folder_id" ]]; then
-        error "Folder ID обязателен"
-        pause
-        return
-    fi
-    
-    sa_name="watchdog-$(date +%s)"
-    
-    info "Создаю Service Account: $sa_name"
-    sa_id=$(yc iam service-account create --name "$sa_name" --folder-id "$folder_id" --format json | jq -r '.id') || {
-        error "Не удалось создать Service Account"
-        pause
-        return
-    }
-    
-    success "Service Account создан: $sa_id"
-    
-    info "Выдаю права compute.operator..."
-    yc resource-manager folder add-access-binding "$folder_id" \
-        --role compute.operator \
-        --subject "serviceAccount:$sa_id" >/dev/null || {
-        error "Не удалось выдать права"
-        pause
-        return
-    }
-    
-    success "Права выданы"
-    
-    info "Создаю ключ..."
-    yc iam key create --service-account-id "$sa_id" --output "$KEY_FILE" >/dev/null || {
-        error "Не удалось создать ключ"
-        pause
-        return
-    }
-    chmod 600 "$KEY_FILE"
-    
-    success "Ключ создан и сохранён"
-    pause
-    
-    # Шаг 4: Запуск
-    clear
-    title "Шаг 4/4: Запуск watchdog"
-    hr
-    echo
-    
-    info "Перезапускаю сервис..."
-    systemctl restart "$SERVICE" || {
-        error "Не удалось перезапустить сервис"
-        pause
-        return
-    }
-    
-    success "Сервис запущен!"
-    echo
-    info "Проверяю логи..."
-    sleep 3
-    
-    docker logs --tail=20 vps-watchdog || true
-    
-    echo
-    success "✅ Настройка завершена!"
-    info "Watchdog теперь следит за твоей VM"
-    pause
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# НАСТРОЙКА КОНФИГУРАЦИИ
-# ═══════════════════════════════════════════════════════════════════
-
-config_menu() {
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "                  ⚙️  НАСТРОЙКА КОНФИГУРАЦИИ                   "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
-    
-    echo "Выбери действие:"
-    echo "  1) 📝 Редактировать конфигурацию (nano)"
-    echo "  2) 👀 Показать текущую конфигурацию"
-    echo "  3) 🔄 Создать новую конфигурацию"
-    echo "  0) ↩️  Назад"
-    echo
-    
-    read -r -p "Выбери: " choice
-    
-    case $choice in
-        1)
-            if [[ ! -f "$CONFIG_FILE" ]]; then
-                warn "Конфиг не существует, создаю..."
-                mkdir -p "$(dirname "$CONFIG_FILE")"
-                cp "$APP_DIR/config/watchdog.env.example" "$CONFIG_FILE" 2>/dev/null || {
-                    cat > "$CONFIG_FILE" <<'EOF'
-VM_HOST=
-INSTANCE_ID=
-SA_KEY_FILE=/app/config/sa-key.json
-CHECK_INTERVAL=60
-PING_COUNT=3
-PING_TIMEOUT=5
-COOLDOWN_MINUTES=5
-MAX_START_ATTEMPTS=3
-EOF
-                }
-            fi
-            
-            info "Открываю редактор..."
-            info "Подсказка: Ctrl+O → Enter → Ctrl+X для сохранения"
-            pause
-            nano "$CONFIG_FILE"
-            
-            info "Перезапускаю сервис..."
-            systemctl restart "$SERVICE"
-            success "Конфигурация обновлена"
-            pause
-            ;;
-        2)
-            echo
-            if [[ -f "$CONFIG_FILE" ]]; then
-                info "Текущая конфигурация:"
-                cat "$CONFIG_FILE"
-            else
-                warn "Конфигурация не найдена"
-            fi
-            pause
-            ;;
-        3)
-            warn "Это перезапишет текущую конфигурацию!"
-            read -r -p "Продолжить? (yes/no): " confirm
-            if [[ "$confirm" == "yes" ]]; then
-                read -r -p "VM_HOST: " vm_host
-                read -r -p "INSTANCE_ID: " instance_id
-                
-                cat > "$CONFIG_FILE" <<EOF
-VM_HOST=$vm_host
-INSTANCE_ID=$instance_id
-SA_KEY_FILE=/app/config/sa-key.json
-CHECK_INTERVAL=60
-PING_COUNT=3
-PING_TIMEOUT=5
-COOLDOWN_MINUTES=5
-MAX_START_ATTEMPTS=3
-EOF
-                success "Новая конфигурация создана"
-                systemctl restart "$SERVICE"
-            fi
-            pause
-            ;;
-        0) return ;;
-    esac
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# НАСТРОЙКА КЛЮЧА
-# ═══════════════════════════════════════════════════════════════════
-
-setup_key() {
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "              🔑 НАСТРОЙКА SERVICE ACCOUNT КЛЮЧА                "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
-    
-    if [[ ! -f "$CONFIG_FILE" ]]; then
-        error "Сначала настрой конфигурацию (пункт 2)"
-        pause
-        return
-    fi
-    
-    echo "Выбери способ:"
-    echo
-    echo "  1) 📤 Загрузить готовый ключ (если уже есть)"
-    echo "  2) 🔨 Создать новый через yc CLI"
-    echo "  0) ← Назад"
-    echo
-    
-    read -r -p "Выбери: " key_choice
-    
-    case $key_choice in
-        1)
-            # Загрузка готового ключа
-            echo
-            info "📤 Загрузка ключа"
-            echo
-            echo "Введи путь к файлу ключа:"
-            echo "(или просто перетащи файл в терминал)"
-            echo
-            read -r -e -p "Путь: " key_path
-            
-            # Убираем возможные кавычки
-            key_path="${key_path//\'/}"
-            key_path="${key_path//\"/}"
-            
-            if [[ ! -f "$key_path" ]]; then
-                error "Файл не найден: $key_path"
-                pause
-                return
-            fi
-            
-            # Проверяем что это JSON
-            if ! jq empty "$key_path" 2>/dev/null; then
-                error "Файл не является валидным JSON"
-                pause
-                return
-            fi
-            
-            # Проверяем структуру ключа
-            if ! jq -e '.service_account_id and .id and .private_key' "$key_path" >/dev/null; then
-                error "Неверная структура ключа"
-                echo "Ключ должен содержать: service_account_id, id, private_key"
-                pause
-                return
-            fi
-            
-            # Копируем ключ
-            mkdir -p "$(dirname "$KEY_FILE")"
-            cp "$key_path" "$KEY_FILE"
-            chmod 600 "$KEY_FILE"
-            
-            success "Ключ загружен!"
-            echo
-            
-            # Перезапускаем сервис
-            info "Перезапускаю сервис..."
-            systemctl restart "$SERVICE"
-            
-            success "Готово! Проверь логи:"
-            echo "   sudo docker logs -f vps-watchdog"
-            pause
-            ;;
-            
-        2)
-            # Создание через yc CLI
-            if ! command -v yc >/dev/null 2>&1; then
-                error "yc CLI не установлен"
-                pause
-                return
-            fi
-            
-            echo
-            info "Создание Service Account и ключа"
-            echo
-            
-            read -r -p "Folder ID (из yc config list): " folder_id
-            if [[ -z "$folder_id" ]]; then
-                error "Folder ID обязателен"
-                pause
-                return
-            fi
-            
-            read -r -p "Имя Service Account [watchdog]: " sa_name
-            sa_name=${sa_name:-watchdog}
-            
-            info "Создаю Service Account..."
-            sa_id=$(yc iam service-account create --name "$sa_name" --folder-id "$folder_id" --format json 2>/dev/null | jq -r '.id') || {
-                error "Ошибка создания SA"
-                echo "Возможно SA с таким именем уже существует"
-                echo "Попробуй другое имя или используй существующий"
-                pause
-                return
-            }
-            
-            success "Service Account создан: $sa_id"
-            
-            info "Выдаю права..."
-            yc resource-manager folder add-access-binding "$folder_id" \
-                --role compute.operator \
-                --subject "serviceAccount:$sa_id" >/dev/null
-            
-            info "Создаю ключ..."
-            mkdir -p "$(dirname "$KEY_FILE")"
-            yc iam key create --service-account-id "$sa_id" --output "$KEY_FILE" >/dev/null
-            chmod 600 "$KEY_FILE"
-            
-            success "Ключ создан: $KEY_FILE"
-            
-            info "Перезапускаю сервис..."
-            systemctl restart "$SERVICE"
-            
-            success "Готово!"
-            pause
-            ;;
-            
-        0) return ;;
-        *) warn "Неверный выбор"; pause ;;
-    esac
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# УПРАВЛЕНИЕ СЕРВИСОМ
-# ═══════════════════════════════════════════════════════════════════
-
-service_menu() {
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "                   🔧 УПРАВЛЕНИЕ СЕРВИСОМ                      "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
-    
-    echo "  1) ▶️  Запустить"
-    echo "  2) ⏹  Остановить"
-    echo "  3) 🔄 Перезапустить"
-    echo "  4) 📊 Статус"
-    echo "  0) ↩️  Назад"
-    echo
-    
-    read -r -p "Выбери: " choice
-    
-    case $choice in
-        1) systemctl start "$SERVICE" && success "Запущен" || error "Ошибка"; pause ;;
-        2) systemctl stop "$SERVICE" && success "Остановлен" || error "Ошибка"; pause ;;
-        3) systemctl restart "$SERVICE" && success "Перезапущен" || error "Ошибка"; pause ;;
-        4) systemctl status "$SERVICE" --no-pager; pause ;;
-        0) return ;;
-    esac
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# ЛОГИ
-# ═══════════════════════════════════════════════════════════════════
-
-show_logs() {
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "                       📜 ЛОГИ WATCHDOG                         "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
-    info "Показываю логи (Ctrl+C для выхода)"
-    hr
-    docker logs -f --tail=100 vps-watchdog 2>/dev/null || {
-        error "Контейнер не запущен"
-        pause
-    }
-}
-
-# ═══════════════════════════════════════════════════════════════════
-# ПРОВЕРКА PING
-# ═══════════════════════════════════════════════════════════════════
-
-test_ping() {
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "                     📡 ПРОВЕРКА PING                          "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
-    
-    load_config
-    
-    if [[ -z "${VM_HOST:-}" ]]; then
-        warn "VM_HOST не настроен"
-        pause
-        return
-    fi
-    
-    info "Пингую $VM_HOST..."
-    hr
-    ping -c 5 -W 2 "$VM_HOST" || warn "VM не отвечает"
     hr
     pause
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# ПОЛУЧЕНИЕ ДАННЫХ VM ЧЕРЕЗ OAUTH
-# ═══════════════════════════════════════════════════════════════════
-
-get_vm_data_oauth() {
+add_profile_oauth() {
     clear
     title "═══════════════════════════════════════════════════════════════"
-    title "           🔍 ПОЛУЧЕНИЕ ДАННЫХ VM (OAuth)                    "
+    title "                ➕ ДОБАВИТЬ ПРОФИЛЬ (OAuth)                    "
     title "═══════════════════════════════════════════════════════════════"
     echo
     
-    # Проверка зависимостей
+    # Проверка jq
     if ! command -v jq >/dev/null 2>&1; then
-        warn "jq не установлен, пытаюсь установить..."
+        warn "jq не установлен, устанавливаю..."
         apt-get update -qq && apt-get install -y -qq jq || {
             error "Не удалось установить jq"
             pause
@@ -659,10 +241,8 @@ get_vm_data_oauth() {
     echo "3️⃣  Разреши доступ к Yandex Cloud"
     echo "4️⃣  Скопируй токен"
     echo
-    echo -e "${YELLOW}⚠️  Токен выглядит так: y0_AgAAAABabcdef...${NC}"
-    echo
     
-    read -r -p "Вставь токен: " oauth_token
+    read -r -p "Вставь OAuth токен: " oauth_token
     
     if [[ -z "$oauth_token" ]]; then
         error "Токен пустой"
@@ -670,10 +250,9 @@ get_vm_data_oauth() {
         return
     fi
     
-    echo
     success "OAuth токен получен"
     
-    # Получаем IAM токен из OAuth токена
+    # Получаем IAM токен
     info "🔄 Получаю IAM токен..."
     
     iam_response=$(curl -s -X POST \
@@ -685,8 +264,6 @@ get_vm_data_oauth() {
     
     if [[ -z "$iam_token" ]]; then
         error "Не удалось получить IAM токен"
-        echo "Ответ API:"
-        echo "$iam_response" | jq .
         pause
         return
     fi
@@ -701,7 +278,7 @@ get_vm_data_oauth() {
             "$2"
     }
     
-    # Получаем список облаков
+    # Получаем облака
     echo
     info "☁️  Получаю список облаков..."
     
@@ -710,15 +287,6 @@ get_vm_data_oauth() {
     
     if [[ "$cloud_count" -eq 0 ]]; then
         error "Облака не найдены"
-        warn "У аккаунта нет доступа к Yandex Cloud"
-        echo
-        echo "Ответ API:"
-        echo "$clouds" | jq .
-        echo
-        warn "Решение:"
-        echo "  1. Убедись что у аккаунта есть доступ к Yandex Cloud"
-        echo "  2. Проверь что аккаунт добавлен в организацию"
-        echo "  3. Выдай роль 'viewer' или 'admin'"
         pause
         return
     fi
@@ -728,21 +296,19 @@ get_vm_data_oauth() {
     # Если облако одно - выбираем автоматически
     if [[ "$cloud_count" -eq 1 ]]; then
         cloud_id=$(echo "$clouds" | jq -r '.clouds[0].id')
-        cloud_name=$(echo "$clouds" | jq -r '.clouds[0].name')
-        success "Выбрано облако: $cloud_name ($cloud_id)"
+        success "Выбрано облако: $cloud_id"
     else
-        # Показываем список облаков
         echo
         echo "┌────────────────────────────────────────────────────────────┐"
         echo "│                    ДОСТУПНЫЕ ОБЛАКА                         │"
         echo "└────────────────────────────────────────────────────────────┘"
         echo
         
-        i=1
+        local i=1
         declare -A cloud_map
         while IFS= read -r cloud; do
-            name=$(echo "$cloud" | jq -r '.name')
-            id=$(echo "$cloud" | jq -r '.id')
+            local name=$(echo "$cloud" | jq -r '.name')
+            local id=$(echo "$cloud" | jq -r '.id')
             
             cloud_map[$i]="$id"
             
@@ -764,7 +330,7 @@ get_vm_data_oauth() {
         cloud_id="${cloud_map[$cloud_choice]}"
     fi
     
-    # Получаем список папок в облаке
+    # Получаем папки
     echo
     info "📁 Получаю список папок..."
     
@@ -773,32 +339,24 @@ get_vm_data_oauth() {
     
     if [[ "$folder_count" -eq 0 ]]; then
         error "Папки не найдены"
-        warn "Возможно у токена нет прав"
-        echo
-        echo "Ответ API:"
-        echo "$folders" | jq .
-        echo
-        warn "Попробуй получить список облаков (clouds):"
-        clouds=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds")
-        echo "$clouds" | jq .
         pause
         return
     fi
     
     success "Найдено папок: $folder_count"
-    echo
     
     # Показываем папки
+    echo
     echo "┌────────────────────────────────────────────────────────────┐"
     echo "│                    ДОСТУПНЫЕ ПАПКИ                          │"
     echo "└────────────────────────────────────────────────────────────┘"
     echo
     
-    i=1
+    local i=1
     declare -A folder_map
     while IFS= read -r folder; do
-        name=$(echo "$folder" | jq -r '.name')
-        id=$(echo "$folder" | jq -r '.id')
+        local name=$(echo "$folder" | jq -r '.name')
+        local id=$(echo "$folder" | jq -r '.id')
         
         folder_map[$i]="$id"
         
@@ -820,7 +378,7 @@ get_vm_data_oauth() {
     folder_id="${folder_map[$folder_choice]}"
     success "Выбрана папка: $folder_id"
     
-    # Получаем список VM
+    # Получаем VM
     echo
     info "🖥️  Получаю список VM..."
     
@@ -834,23 +392,23 @@ get_vm_data_oauth() {
     fi
     
     success "Найдено VM: $vm_count"
-    echo
     
     # Показываем VM
+    echo
     echo "┌────────────────────────────────────────────────────────────┐"
     echo "│                 ДОСТУПНЫЕ ВИРТУАЛЬНЫЕ МАШИНЫ                │"
     echo "└────────────────────────────────────────────────────────────┘"
     echo
     
-    i=1
+    local i=1
     declare -A vm_map
     while IFS= read -r vm; do
-        name=$(echo "$vm" | jq -r '.name')
-        id=$(echo "$vm" | jq -r '.id')
-        status=$(echo "$vm" | jq -r '.status')
-        ip=$(echo "$vm" | jq -r '.networkInterfaces[0].primaryV4Address.oneToOneNat.address // "нет IP"')
+        local name=$(echo "$vm" | jq -r '.name')
+        local id=$(echo "$vm" | jq -r '.id')
+        local status=$(echo "$vm" | jq -r '.status')
+        local ip=$(echo "$vm" | jq -r '.networkInterfaces[0].primaryV4Address.oneToOneNat.address // "нет IP"')
         
-        vm_map[$i]="$id|$ip"
+        vm_map[$i]="$id|$ip|$name"
         
         echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
         echo "   ID:     $id"
@@ -869,127 +427,481 @@ get_vm_data_oauth() {
         return
     fi
     
-    IFS='|' read -r instance_id vm_host <<< "${vm_map[$vm_choice]}"
+    IFS='|' read -r instance_id vm_host vm_name <<< "${vm_map[$vm_choice]}"
     
-    echo
     success "Выбрана VM:"
+    echo "   Имя:         $vm_name"
     echo "   Instance ID: $instance_id"
     echo "   VM Host:     $vm_host"
     echo
     
-    # Обновляем конфиг
-    info "Обновляю конфигурацию..."
+    # Создаём профиль
+    info "💾 Создаю профиль..."
     
-    sed -i "s|^VM_HOST=.*|VM_HOST=$vm_host|" "$CONFIG_FILE"
-    sed -i "s|^INSTANCE_ID=.*|INSTANCE_ID=$instance_id|" "$CONFIG_FILE"
+    mkdir -p "$PROFILES_DIR"
     
-    success "Конфигурация обновлена!"
+    # Генерируем уникальный ID
+    profile_id=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 8 | head -n 1)
+    profile_file="$PROFILES_DIR/${profile_id}.json"
+    
+    cat > "$profile_file" <<EOF
+{
+  "id": "$profile_id",
+  "name": "$vm_name",
+  "vm_host": "$vm_host",
+  "instance_id": "$instance_id",
+  "folder_id": "$folder_id",
+  "enabled": true,
+  "check_interval": 60,
+  "ping_count": 3,
+  "ping_timeout": 5,
+  "cooldown_minutes": 5,
+  "max_start_attempts": 3,
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)"
+}
+EOF
+    
+    success "Профиль создан!"
     echo
     
-    # Предлагаем загрузить ключ
-    warn "⚠️  Теперь нужен ключ Service Account"
+    # Перезапускаем сервис
+    info "🔄 Перезапускаю сервис..."
+    systemctl restart "$SERVICE"
+    
+    success "Готово! Профиль добавлен и мониторинг запущен!"
     echo
-    echo "Есть 2 варианта:"
-    echo
-    echo "1️⃣  Создать через веб-консоль (рекомендуется):"
-    echo "   ${CYAN}https://console.cloud.yandex.ru → IAM → Service accounts${NC}"
-    echo "   a) Создай SA: watchdog"
-    echo "   b) Роль: compute.operator"
-    echo "   c) Создай ключ → Скачай"
-    echo
-    echo "2️⃣  Загрузить ключ прямо сейчас (если уже есть)"
+    info "Проверь логи: sudo docker logs -f vps-watchdog"
+    
+    pause
+}
+
+# Продолжение в следующем файле...
+#!/usr/bin/env bash
+# Продолжение vps-watchdog menu
+
+# ═══════════════════════════════════════════════════════════════════
+# РЕДАКТИРОВАНИЕ/УДАЛЕНИЕ ПРОФИЛЕЙ
+# ═══════════════════════════════════════════════════════════════════
+
+edit_profile() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                   ✏️  РЕДАКТИРОВАТЬ ПРОФИЛЬ                    "
+    title "═══════════════════════════════════════════════════════════════"
     echo
     
-    read -r -p "Хочешь загрузить ключ сейчас? (y/n): " upload_key
+    if [[ ! -d "$PROFILES_DIR" ]] || [[ -z "$(ls -A "$PROFILES_DIR"/*.json 2>/dev/null)" ]]; then
+        warn "Нет профилей"
+        pause
+        return
+    fi
     
-    if [[ "$upload_key" == "y" || "$upload_key" == "Y" ]]; then
-        echo
-        info "📤 Загрузка ключа"
-        echo
-        echo "Введи путь к файлу ключа:"
-        echo "(или просто перетащи файл в терминал)"
-        echo
-        read -r -e -p "Путь: " key_path
+    # Показываем список
+    local i=1
+    declare -A profile_files
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        local name=$(jq -r '.name' "$file")
+        profile_files[$i]="$file"
+        echo -e "${BOLD}$i)${NC} $name"
+        ((i++))
+    done
+    
+    echo "0) Назад"
+    echo
+    read -r -p "Выбери профиль: " choice
+    
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+    
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ -z "${profile_files[$choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    local file="${profile_files[$choice]}"
+    
+    # Редактируем
+    echo
+    info "Редактирование: $(jq -r '.name' "$file")"
+    echo
+    
+    read -r -p "Новое имя [Enter - оставить]: " new_name
+    read -r -p "Интервал проверки в секундах [Enter - оставить]: " new_interval
+    read -r -p "Cooldown в минутах [Enter - оставить]: " new_cooldown
+    
+    # Обновляем
+    local tmp_file=$(mktemp)
+    jq "$(
+        echo '.'
+        [[ -n "$new_name" ]] && echo "| .name = \"$new_name\""
+        [[ -n "$new_interval" ]] && echo "| .check_interval = $new_interval"
+        [[ -n "$new_cooldown" ]] && echo "| .cooldown_minutes = $new_cooldown"
+        echo "| .updated_at = \"$(date -Iseconds)\""
+    )" "$file" > "$tmp_file"
+    
+    mv "$tmp_file" "$file"
+    
+    success "Профиль обновлён!"
+    systemctl restart "$SERVICE"
+    pause
+}
+
+delete_profile() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                     🗑️  УДАЛИТЬ ПРОФИЛЬ                       "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    if [[ ! -d "$PROFILES_DIR" ]] || [[ -z "$(ls -A "$PROFILES_DIR"/*.json 2>/dev/null)" ]]; then
+        warn "Нет профилей"
+        pause
+        return
+    fi
+    
+    # Показываем список
+    local i=1
+    declare -A profile_files
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        local name=$(jq -r '.name' "$file")
+        profile_files[$i]="$file"
+        echo -e "${BOLD}$i)${NC} $name"
+        ((i++))
+    done
+    
+    echo "0) Назад"
+    echo
+    read -r -p "Выбери профиль для удаления: " choice
+    
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+    
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ -z "${profile_files[$choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    local file="${profile_files[$choice]}"
+    local name=$(jq -r '.name' "$file")
+    
+    echo
+    warn "Удалить профиль '$name'?"
+    read -r -p "(yes/no): " confirm
+    
+    if [[ "$confirm" == "yes" ]]; then
+        rm "$file"
+        success "Профиль удалён!"
+        systemctl restart "$SERVICE"
+    else
+        info "Отменено"
+    fi
+    
+    pause
+}
+
+toggle_profile() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "              🔄 ВКЛЮЧИТЬ/ВЫКЛЮЧИТЬ МОНИТОРИНГ                 "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    if [[ ! -d "$PROFILES_DIR" ]] || [[ -z "$(ls -A "$PROFILES_DIR"/*.json 2>/dev/null)" ]]; then
+        warn "Нет профилей"
+        pause
+        return
+    fi
+    
+    # Показываем список
+    local i=1
+    declare -A profile_files
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        local name=$(jq -r '.name' "$file")
+        local enabled=$(jq -r '.enabled' "$file")
+        local status="🔴 выключен"
+        [[ "$enabled" == "true" ]] && status="🟢 включен"
+        profile_files[$i]="$file"
+        echo -e "${BOLD}$i)${NC} $name ($status)"
+        ((i++))
+    done
+    
+    echo "0) Назад"
+    echo
+    read -r -p "Выбери профиль: " choice
+    
+    if [[ "$choice" == "0" ]]; then
+        return
+    fi
+    
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ -z "${profile_files[$choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    local file="${profile_files[$choice]}"
+    local current=$(jq -r '.enabled' "$file")
+    local new_state="false"
+    [[ "$current" == "false" ]] && new_state="true"
+    
+    jq ".enabled = $new_state | .updated_at = \"$(date -Iseconds)\"" "$file" > "$file.tmp"
+    mv "$file.tmp" "$file"
+    
+    if [[ "$new_state" == "true" ]]; then
+        success "Мониторинг включен!"
+    else
+        success "Мониторинг выключен!"
+    fi
+    
+    systemctl restart "$SERVICE"
+    pause
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# TELEGRAM
+# ═══════════════════════════════════════════════════════════════════
+
+setup_telegram() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                   🤖 НАСТРОЙКА TELEGRAM БОТА                   "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    info "📋 ИНСТРУКЦИЯ:"
+    echo
+    echo "1️⃣  Создай бота через @BotFather в Telegram"
+    echo "   • Отправь команду: /newbot"
+    echo "   • Придумай имя бота"
+    echo "   • Скопируй токен (выглядит так: 123456:ABC-DEF...)"
+    echo
+    echo "2️⃣  Получи Chat ID"
+    echo "   • Напиши своему боту любое сообщение"
+    echo "   • Открой: https://api.telegram.org/botТВОЙ_ТОКЕН/getUpdates"
+    echo "   • Найди \"chat\":{\"id\":123456789"
+    echo
+    hr
+    echo
+    
+    read -r -p "Bot Token: " bot_token
+    
+    if [[ -z "$bot_token" ]]; then
+        error "Токен пустой"
+        pause
+        return
+    fi
+    
+    read -r -p "Chat ID: " chat_id
+    
+    if [[ -z "$chat_id" ]]; then
+        error "Chat ID пустой"
+        pause
+        return
+    fi
+    
+    # Тестируем подключение
+    info "🔄 Проверяю подключение..."
+    
+    response=$(curl -s "https://api.telegram.org/bot${bot_token}/getMe")
+    
+    if echo "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+        bot_username=$(echo "$response" | jq -r '.result.username')
+        success "Бот подключен: @$bot_username"
         
-        # Убираем возможные кавычки
-        key_path="${key_path//\'/}"
-        key_path="${key_path//\"/}"
+        # Сохраняем конфиг
+        mkdir -p "$CONFIG_DIR"
+        cat > "$TELEGRAM_CONFIG" <<EOF
+{
+  "bot_token": "$bot_token",
+  "chat_id": "$chat_id",
+  "enabled": true,
+  "notify_on_down": true,
+  "notify_on_up": true,
+  "notify_on_error": true,
+  "notify_on_start": false
+}
+EOF
         
-        if [[ ! -f "$key_path" ]]; then
-            error "Файл не найден: $key_path"
-            pause
-            return
-        fi
+        success "Конфигурация сохранена!"
         
-        # Проверяем что это JSON
-        if ! jq empty "$key_path" 2>/dev/null; then
-            error "Файл не является валидным JSON"
-            pause
-            return
-        fi
+        # Отправляем тестовое сообщение
+        curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+            -d "chat_id=${chat_id}" \
+            -d "text=🛡️ <b>VPS Watchdog подключен!</b>%0A%0AУведомления активированы." \
+            -d "parse_mode=HTML" >/dev/null
         
-        # Копируем ключ
-        cp "$key_path" "$KEY_FILE"
-        chmod 600 "$KEY_FILE"
-        
-        success "Ключ загружен!"
-        echo
+        success "Тестовое сообщение отправлено!"
         
         # Перезапускаем сервис
-        info "Перезапускаю сервис..."
-        systemctl restart vps-watchdog
+        systemctl restart "$SERVICE"
         
-        success "Готово! Проверь логи:"
-        echo "   sudo docker logs -f vps-watchdog"
     else
-        echo
-        warn "После создания ключа:"
-        echo "   1) Скачай ключ"
-        echo "   2) Запусти меню снова"
-        echo "   3) Выбери пункт 3 (Настроить ключ)"
-        echo "   4) Загрузи ключ"
+        error "Не удалось подключиться к боту"
+        echo "Проверь Bot Token"
     fi
+    
+    pause
+}
+
+test_telegram() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                   📤 ТЕСТ УВЕДОМЛЕНИЯ                         "
+    title "═══════════════════════════════════════════════════════════════"
     echo
+    
+    if [[ ! -f "$TELEGRAM_CONFIG" ]]; then
+        error "Telegram не настроен"
+        info "Настрой бота через пункт 6"
+        pause
+        return
+    fi
+    
+    bot_token=$(jq -r '.bot_token' "$TELEGRAM_CONFIG")
+    chat_id=$(jq -r '.chat_id' "$TELEGRAM_CONFIG")
+    
+    info "Отправляю тестовое уведомление..."
+    
+    message="🧪 <b>Тестовое уведомление</b>%0A%0A⏰ Время: $(date '+%d.%m.%Y %H:%M:%S')%0A✅ Telegram работает!"
+    
+    response=$(curl -s -X POST "https://api.telegram.org/bot${bot_token}/sendMessage" \
+        -d "chat_id=${chat_id}" \
+        -d "text=${message}" \
+        -d "parse_mode=HTML")
+    
+    if echo "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+        success "Сообщение отправлено!"
+    else
+        error "Ошибка отправки"
+        echo "$response" | jq .
+    fi
+    
+    pause
+}
+
+telegram_status() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                     📊 СТАТУС TELEGRAM                        "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    if [[ ! -f "$TELEGRAM_CONFIG" ]]; then
+        error "Telegram не настроен"
+        pause
+        return
+    fi
+    
+    bot_token=$(jq -r '.bot_token' "$TELEGRAM_CONFIG")
+    chat_id=$(jq -r '.chat_id' "$TELEGRAM_CONFIG")
+    enabled=$(jq -r '.enabled' "$TELEGRAM_CONFIG")
+    
+    response=$(curl -s "https://api.telegram.org/bot${bot_token}/getMe")
+    
+    if echo "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+        bot_username=$(echo "$response" | jq -r '.result.username')
+        bot_name=$(echo "$response" | jq -r '.result.first_name')
+        
+        echo -e "${GREEN}✅ Бот подключен${NC}"
+        echo
+        echo "   Имя:      $bot_name"
+        echo "   Username: @$bot_username"
+        echo "   Chat ID:  $chat_id"
+        echo -e "   Статус:   $([ "$enabled" == "true" ] && echo "${GREEN}включен${NC}" || echo "${RED}выключен${NC}")"
+        echo
+        
+        info "Настройки уведомлений:"
+        echo "   🔴 VM упала:       $(jq -r '.notify_on_down' "$TELEGRAM_CONFIG")"
+        echo "   🟢 VM запущена:    $(jq -r '.notify_on_up' "$TELEGRAM_CONFIG")"
+        echo "   ⚠️  Ошибки:         $(jq -r '.notify_on_error' "$TELEGRAM_CONFIG")"
+        
+    else
+        error "Бот недоступен"
+    fi
     
     pause
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# ПОМОЩЬ
+# УПРАВЛЕНИЕ СЕРВИСОМ
 # ═══════════════════════════════════════════════════════════════════
+
+service_menu() {
+    while true; do
+        clear
+        title "═══════════════════════════════════════════════════════════════"
+        title "                   🔧 УПРАВЛЕНИЕ СЕРВИСОМ                      "
+        title "═══════════════════════════════════════════════════════════════"
+        echo
+        
+        echo "  1) ▶️  Запустить"
+        echo "  2) ⏹️  Остановить"
+        echo "  3) 🔄 Перезапустить"
+        echo "  4) 📊 Статус"
+        echo "  0) ← Назад"
+        echo
+        
+        read -r -p "Выбери: " choice
+        
+        case $choice in
+            1) systemctl start "$SERVICE"; success "Сервис запущен"; pause ;;
+            2) systemctl stop "$SERVICE"; success "Сервис остановлен"; pause ;;
+            3) systemctl restart "$SERVICE"; success "Сервис перезапущен"; pause ;;
+            4) systemctl status "$SERVICE"; pause ;;
+            0) return ;;
+            *) warn "Неверный выбор"; pause ;;
+        esac
+    done
+}
+
+show_logs() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                         📜 ЛОГИ                               "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    docker logs --tail 50 vps-watchdog 2>&1
+    
+    pause
+}
+
+show_stats() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                       📈 СТАТИСТИКА                           "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    warn "Функция в разработке"
+    info "Будет доступна в следующей версии"
+    
+    pause
+}
 
 show_help() {
     clear
     title "═══════════════════════════════════════════════════════════════"
-    title "                         ℹ️  ПОМОЩЬ                             "
+    title "                         ❓ ПОМОЩЬ                             "
     title "═══════════════════════════════════════════════════════════════"
     echo
     
-    info "🚀 Быстрый старт:"
-    echo "  1. Запусти 'Быструю настройку' (пункт 1)"
-    echo "  2. Следуй инструкциям мастера"
-    echo "  3. Watchdog автоматически запустится"
+    echo "📖 VPS Watchdog v$VERSION"
     echo
-    
-    info "📝 Что настроить:"
-    echo "  • VM_HOST - внешний IP твоей VM"
-    echo "  • INSTANCE_ID - ID VM (yc compute instance list)"
-    echo "  • Service Account ключ - для управления VM"
+    echo "Автоматический мониторинг и запуск VM в Yandex Cloud"
     echo
-    
-    info "❓ Частые вопросы:"
-    echo "  Q: VM не запускается?"
-    echo "  A: Проверь логи (пункт 5) и права SA"
+    hr
     echo
-    echo "  Q: Где взять INSTANCE_ID?"
-    echo "  A: Команда: yc compute instance list"
-    echo
-    echo "  Q: Как часто проверяется VM?"
-    echo "  A: По умолчанию каждые 60 секунд"
-    echo
-    
-    info "🔗 Документация:"
-    echo "  GitHub: https://github.com/Mastachok/ya-vps-autostart"
+    echo "🔗 GitHub: https://github.com/Mastachok/ya-vps-autostart"
+    echo "📚 Документация: README.md"
     echo
     
     pause
@@ -999,6 +911,14 @@ show_help() {
 # ЗАПУСК
 # ═══════════════════════════════════════════════════════════════════
 
-need_root
-mkdir -p "$APP_DIR/config"
+# Проверка прав
+if [[ $EUID -ne 0 ]]; then
+    error "Запусти с правами root: sudo vps-watchdog"
+    exit 1
+fi
+
+# Создаём директории
+mkdir -p "$CONFIG_DIR" "$PROFILES_DIR" "$DATA_DIR"
+
+# Запускаем меню
 main_menu
