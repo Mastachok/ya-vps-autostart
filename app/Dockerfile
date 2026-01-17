@@ -12,18 +12,16 @@ RUN apt-get update && apt-get install -y \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Python зависимости
+# Устанавливаем Python зависимости - без фиксированных версий
 RUN pip install --no-cache-dir \
-    yandexcloud==0.307.0 \
-    requests==2.31.0 \
-    grpcio==1.60.0 \
-    protobuf==4.25.1
+    yandexcloud \
+    requests
 
 # Создаём рабочую директорию
 WORKDIR /app
 
 # Копируем приложение
-COPY app/*.py /app/
+COPY *.py /app/
 
 # Создаём директории
 RUN mkdir -p /app/config /app/profiles /app/data /app/logs
