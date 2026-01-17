@@ -19,6 +19,16 @@
 
 ## ⚡ Установка (1 команда)
 
+**⚠️ ВАЖНО:** Watchdog устанавливается на **стабильный сервер**, который будет следить за **Yandex Cloud VM**!
+
+```
+🟢 WATCHDOG СЕРВЕР        ──следит──▶  🔴 YANDEX CLOUD VM
+   (любой хостинг:                        (может падать)
+   Hetzner, AWS, даже дома)
+```
+
+📖 **Подробная схема:** [Установка watchdog](docs/TWO_VM_SETUP.md)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/install.sh | sudo bash
 ```
