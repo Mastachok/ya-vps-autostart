@@ -39,11 +39,34 @@ sudo vps-watchdog
 
 ## 📋 Что нужно подготовить?
 
+### Вариант 1: Автоматический сбор (рекомендуется) 🚀
+
+Используй автоматический скрипт для сбора всех данных:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/bin/get-vm-data -o get-vm-data
+chmod +x get-vm-data
+./get-vm-data
+```
+
+Скрипт автоматически:
+- ✅ Найдёт все твои VM
+- ✅ Покажет их IP и ID
+- ✅ Создаст/использует Service Account
+- ✅ Создаст и сохранит ключ
+- ✅ Выдаст все данные готовыми
+
+### Вариант 2: Вручную
+
 1. **VM_HOST** - внешний IP адрес твоей VM
 2. **INSTANCE_ID** - UUID VM в Yandex Cloud  
    Получить: `yc compute instance list`
 3. **yc CLI** - установленный и настроенный  
    Установка: [yandex.cloud/docs/cli](https://cloud.yandex.ru/docs/cli/quickstart)
+
+📖 **Подробная инструкция:**
+- [Где взять данные (с картинками)](docs/VISUAL_GUIDE.md)
+- [Автоматический сбор данных](docs/WHERE_TO_GET_DATA.md)
 
 ---
 
