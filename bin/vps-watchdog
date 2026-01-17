@@ -62,16 +62,23 @@ count_profiles() {
         echo "0 0"
         return
     fi
-    local total=$(find "$PROFILES_DIR" -name "*.json" 2>/dev/null | wc -l)
+
+    local total
+    total=$(find "$PROFILES_DIR" -name "*.json" 2>/dev/null | wc -l)
+
     local enabled=0
-    for file in "$PROFILES_DIR"/*.json 2>/dev/null; do
+    shopt -s nullglob
+    for file in "$PROFILES_DIR"/*.json; do
         [[ -f "$file" ]] || continue
         if jq -e '.enabled == true' "$file" >/dev/null 2>&1; then
             ((enabled++))
         fi
     done
+    shopt -u nullglob
+
     echo "$total $enabled"
 }
+
 
 get_service_status() {
     if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
