@@ -69,7 +69,27 @@ if [[ -z "$OAUTH_TOKEN" ]]; then
 fi
 
 echo
-echo -e "${GREEN}✅ Токен получен${NC}"
+echo -e "${GREEN}✅ OAuth токен получен${NC}"
+
+# Получаем IAM токен из OAuth токена
+echo
+echo -e "${CYAN}🔄 Получаю IAM токен...${NC}"
+
+IAM_RESPONSE=$(curl -s -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"yandexPassportOauthToken\": \"$OAUTH_TOKEN\"}" \
+    "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+
+IAM_TOKEN=$(echo "$IAM_RESPONSE" | jq -r '.iamToken // empty')
+
+if [[ -z "$IAM_TOKEN" ]]; then
+    echo -e "${RED}❌ Не удалось получить IAM токен${NC}"
+    echo "Ответ API:"
+    echo "$IAM_RESPONSE" | jq .
+    exit 1
+fi
+
+echo -e "${GREEN}✅ IAM токен получен${NC}"
 
 # Функция для API запросов с OAuth
 yc_api() {
@@ -79,13 +99,13 @@ yc_api() {
     
     if [[ -n "$data" ]]; then
         curl -s -X "$method" \
-            -H "Authorization: Bearer $OAUTH_TOKEN" \
+            -H "Authorization: Bearer $IAM_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$data" \
             "$url"
     else
         curl -s -X "$method" \
-            -H "Authorization: Bearer $OAUTH_TOKEN" \
+            -H "Authorization: Bearer $IAM_TOKEN" \
             "$url"
     fi
 }
