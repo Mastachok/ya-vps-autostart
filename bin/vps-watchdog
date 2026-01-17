@@ -447,21 +447,23 @@ add_profile_oauth() {
     profile_file="$PROFILES_DIR/${profile_id}.json"
     
     cat > "$profile_file" <<EOF
-{
-  "id": "$profile_id",
-  "name": "$vm_name",
-  "vm_host": "$vm_host",
-  "instance_id": "$instance_id",
-  "folder_id": "$folder_id",
+# Создаём профиль через printf вместо heredoc
+    printf '{
+  "id": "%s",
+  "name": "%s",
+  "vm_host": "%s",
+  "instance_id": "%s",
+  "folder_id": "%s",
   "enabled": true,
   "check_interval": 60,
   "ping_count": 3,
   "ping_timeout": 5,
   "cooldown_minutes": 5,
   "max_start_attempts": 3,
-  "created_at": "$(date -Iseconds)",
-  "updated_at": "$(date -Iseconds)"
+  "created_at": "%s",
+  "updated_at": "%s"
 }
+' "$profile_id" "$vm_name" "$vm_host" "$instance_id" "$folder_id" "$(date -Iseconds)" "$(date -Iseconds)" > "$profile_file"
 EOF
     
     success "Профиль создан!"
