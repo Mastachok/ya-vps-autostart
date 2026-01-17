@@ -631,16 +631,86 @@ get_vm_data_oauth() {
             "$2"
     }
     
-    # Получаем список папок
+    # Получаем список облаков
+    echo
+    info "☁️  Получаю список облаков..."
+    
+    clouds=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds")
+    cloud_count=$(echo "$clouds" | jq '.clouds // [] | length')
+    
+    if [[ "$cloud_count" -eq 0 ]]; then
+        error "Облака не найдены"
+        warn "У аккаунта нет доступа к Yandex Cloud"
+        echo
+        echo "Ответ API:"
+        echo "$clouds" | jq .
+        echo
+        warn "Решение:"
+        echo "  1. Убедись что у аккаунта есть доступ к Yandex Cloud"
+        echo "  2. Проверь что аккаунт добавлен в организацию"
+        echo "  3. Выдай роль 'viewer' или 'admin'"
+        pause
+        return
+    fi
+    
+    success "Найдено облаков: $cloud_count"
+    
+    # Если облако одно - выбираем автоматически
+    if [[ "$cloud_count" -eq 1 ]]; then
+        cloud_id=$(echo "$clouds" | jq -r '.clouds[0].id')
+        cloud_name=$(echo "$clouds" | jq -r '.clouds[0].name')
+        success "Выбрано облако: $cloud_name ($cloud_id)"
+    else
+        # Показываем список облаков
+        echo
+        echo "┌────────────────────────────────────────────────────────────┐"
+        echo "│                    ДОСТУПНЫЕ ОБЛАКА                         │"
+        echo "└────────────────────────────────────────────────────────────┘"
+        echo
+        
+        i=1
+        declare -A cloud_map
+        while IFS= read -r cloud; do
+            name=$(echo "$cloud" | jq -r '.name')
+            id=$(echo "$cloud" | jq -r '.id')
+            
+            cloud_map[$i]="$id"
+            
+            echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+            echo "   ID: $id"
+            echo
+            
+            ((i++))
+        done < <(echo "$clouds" | jq -c '.clouds[]')
+        
+        read -r -p "Выбери номер облака: " cloud_choice
+        
+        if [[ ! "$cloud_choice" =~ ^[0-9]+$ ]] || [[ -z "${cloud_map[$cloud_choice]:-}" ]]; then
+            error "Неверный выбор"
+            pause
+            return
+        fi
+        
+        cloud_id="${cloud_map[$cloud_choice]}"
+    fi
+    
+    # Получаем список папок в облаке
     echo
     info "📁 Получаю список папок..."
     
-    folders=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders")
+    folders=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders?cloudId=$cloud_id")
     folder_count=$(echo "$folders" | jq '.folders // [] | length')
     
     if [[ "$folder_count" -eq 0 ]]; then
         error "Папки не найдены"
         warn "Возможно у токена нет прав"
+        echo
+        echo "Ответ API:"
+        echo "$folders" | jq .
+        echo
+        warn "Попробуй получить список облаков (clouds):"
+        clouds=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds")
+        echo "$clouds" | jq .
         pause
         return
     fi
