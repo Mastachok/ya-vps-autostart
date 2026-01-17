@@ -2,33 +2,22 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Обновляем pip
-RUN pip install --no-cache-dir --upgrade pip
-
-# Копируем и устанавливаем зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir requests PyJWT[crypto] cryptography
 
 # Устанавливаем системные пакеты
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-    iputils-ping \
-    ca-certificates \
-    tzdata \
- && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends iputils-ping ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем часовой пояс (по умолчанию UTC)
-ENV TZ=UTC
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# Копируем скрипт
+COPY monitor.py .
+RUN chmod +x monitor.py
 
-# Копируем Python скрипты
-COPY monitor.py yc_api.py ./
-
-# Создаём непривилегированного пользователя для безопасности
+# Создаём непривилегированного пользователя
 RUN useradd -m -u 1000 watchdog && \
     chown -R watchdog:watchdog /app
 
 USER watchdog
 
-# Запускаем с unbuffered output для правильного логирования
-CMD ["python", "-u", "monitor.py"]
+CMD ["python3", "-u", "monitor.py"]
