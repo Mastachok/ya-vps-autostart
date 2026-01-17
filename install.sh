@@ -2,156 +2,205 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════
-# VPS Watchdog v2.0 - Установка
+# VPS Watchdog v3.0 - Installation Script
 # ═══════════════════════════════════════════════════════════════════
 
-APP_DIR="/opt/vps-watchdog"
-BIN_PATH="/usr/local/bin/vps-watchdog"
-SERVICE_PATH="/etc/systemd/system/vps-watchdog.service"
-REPO_URL="https://github.com/Mastachok/ya-vps-autostart.git"
-REPO_BRANCH="main"
+VERSION="3.0.0"
+INSTALL_DIR="/opt/vps-watchdog"
+REPO_URL="https://github.com/Mastachok/ya-vps-autostart"
 
 # Цвета
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-RED='\033[0;31m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
-success() { echo -e "${GREEN}✅ $*${NC}"; }
-warn() { echo -e "${YELLOW}⚠️  $*${NC}"; }
-error() { echo -e "${RED}❌ $*${NC}"; }
-
-# Проверка root
-if [[ $EUID -ne 0 ]]; then
-    error "Запусти через sudo"
-    exit 1
-fi
-
-echo "═══════════════════════════════════════════════════════════════"
-echo "  🛡️  VPS WATCHDOG v2.0 - Установка"
-echo "═══════════════════════════════════════════════════════════════"
+echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}${BOLD}       🛡️  VPS WATCHDOG v${VERSION} - Installation${NC}"
+echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
 echo
 
-# 1. Установка зависимостей
-success "Устанавливаю зависимости..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl git jq nano
-
-# 2. Docker
-if ! command -v docker >/dev/null 2>&1; then
-    warn "Устанавливаю Docker..."
-    curl -fsSL https://get.docker.com | sh >/dev/null
-    success "Docker установлен"
-else
-    success "Docker уже установлен"
-fi
-
-# 3. Docker Compose
-if ! docker compose version >/dev/null 2>&1; then
-    warn "Устанавливаю Docker Compose..."
-    apt-get install -y -qq docker-compose-plugin
-fi
-
-if ! docker compose version >/dev/null 2>&1; then
-    error "Не удалось установить Docker Compose"
+# Проверка прав
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}❌ Запусти с правами root${NC}"
     exit 1
 fi
 
-success "Docker Compose готов"
+# Проверка ОС
+if [[ ! -f /etc/os-release ]]; then
+    echo -e "${RED}❌ Неподдерживаемая ОС${NC}"
+    exit 1
+fi
 
-# 4. Клонирование репозитория
-if [[ -d "$APP_DIR/.git" ]]; then
-    success "Обновляю репозиторий..."
-    git -C "$APP_DIR" fetch --all -q
-    git -C "$APP_DIR" checkout "$REPO_BRANCH" -q
-    git -C "$APP_DIR" pull -q
+source /etc/os-release
+if [[ "$ID" != "ubuntu" ]] && [[ "$ID" != "debian" ]]; then
+    echo -e "${YELLOW}⚠️  Поддерживаются только Ubuntu/Debian${NC}"
+    echo "Продолжить? (yes/no)"
+    read -r confirm
+    [[ "$confirm" != "yes" ]] && exit 1
+fi
+
+# Проверка Docker
+echo -e "${CYAN}🔍 Проверка Docker...${NC}"
+if ! command -v docker >/dev/null 2>&1; then
+    echo -e "${YELLOW}Docker не установлен, устанавливаю...${NC}"
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable docker
+    systemctl start docker
+    echo -e "${GREEN}✅ Docker установлен${NC}"
 else
-    success "Клонирую репозиторий..."
-    rm -rf "$APP_DIR"
-    git clone -q --branch "$REPO_BRANCH" "$REPO_URL" "$APP_DIR"
+    echo -e "${GREEN}✅ Docker найден${NC}"
 fi
 
-# 5. Установка CLI меню
-success "Устанавливаю CLI меню..."
-install -m 755 "$APP_DIR/bin/vps-watchdog" "$BIN_PATH"
+# Проверка Docker Compose
+if ! command -v docker-compose >/dev/null 2>&1; then
+    echo -e "${YELLOW}Docker Compose не установлен, устанавливаю...${NC}"
+    apt-get update -qq
+    apt-get install -y docker-compose
+    echo -e "${GREEN}✅ Docker Compose установлен${NC}"
+else
+    echo -e "${GREEN}✅ Docker Compose найден${NC}"
+fi
 
-# 6. Создание структуры
-mkdir -p "$APP_DIR/config"
+# Проверка jq
+if ! command -v jq >/dev/null 2>&1; then
+    echo -e "${YELLOW}jq не установлен, устанавливаю...${NC}"
+    apt-get update -qq
+    apt-get install -y jq
+    echo -e "${GREEN}✅ jq установлен${NC}"
+else
+    echo -e "${GREEN}✅ jq найден${NC}"
+fi
 
-# 7. Создание примера конфига если нет
-if [[ ! -f "$APP_DIR/config/watchdog.env" ]]; then
-    cat > "$APP_DIR/config/watchdog.env" <<'EOF'
-# ═══════════════════════════════════════════════════════════════════
-# VPS Watchdog - Конфигурация
-# ═══════════════════════════════════════════════════════════════════
-
-# IP адрес вашей VM (который пингуем)
-VM_HOST=
-
-# ID виртуальной машины в Yandex Cloud
-# Получить: yc compute instance list
-INSTANCE_ID=
-
-# Путь к ключу Service Account
-SA_KEY_FILE=/app/config/sa-key.json
-
-# Настройки мониторинга
-CHECK_INTERVAL=60
-PING_COUNT=3
-PING_TIMEOUT=5
-
-# Защита от частых перезапусков
-COOLDOWN_MINUTES=5
-MAX_START_ATTEMPTS=3
+# Миграция с v2.0
+if [[ -d "$INSTALL_DIR" ]] && [[ ! -d "$INSTALL_DIR/profiles" ]]; then
+    echo
+    echo -e "${CYAN}📦 Обнаружена версия 2.0, выполняю миграцию...${NC}"
+    
+    # Создаём директорию профилей
+    mkdir -p "$INSTALL_DIR/profiles"
+    
+    # Если есть старый конфиг - создаём профиль из него
+    if [[ -f "$INSTALL_DIR/config/watchdog.env" ]]; then
+        source "$INSTALL_DIR/config/watchdog.env" 2>/dev/null || true
+        
+        if [[ -n "${VM_HOST:-}" ]] && [[ -n "${INSTANCE_ID:-}" ]]; then
+            profile_id=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 8 | head -n 1)
+            
+            cat > "$INSTALL_DIR/profiles/${profile_id}.json" <<EOF
+{
+  "id": "$profile_id",
+  "name": "Migrated from v2.0",
+  "vm_host": "$VM_HOST",
+  "instance_id": "$INSTANCE_ID",
+  "folder_id": "${FOLDER_ID:-}",
+  "enabled": true,
+  "check_interval": ${CHECK_INTERVAL:-60},
+  "ping_count": ${PING_COUNT:-3},
+  "ping_timeout": ${PING_TIMEOUT:-5},
+  "cooldown_minutes": ${COOLDOWN_MINUTES:-5},
+  "max_start_attempts": ${MAX_START_ATTEMPTS:-3},
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)"
+}
 EOF
+            echo -e "${GREEN}✅ Создан профиль из старой конфигурации${NC}"
+        fi
+    fi
+    
+    # Бэкап старой версии
+    if [[ -d "$INSTALL_DIR.v2-backup" ]]; then
+        rm -rf "$INSTALL_DIR.v2-backup"
+    fi
+    cp -r "$INSTALL_DIR" "$INSTALL_DIR.v2-backup"
+    echo -e "${GREEN}✅ Бэкап v2.0 создан: $INSTALL_DIR.v2-backup${NC}"
 fi
 
-# 8. Создание пустого ключа
-if [[ ! -f "$APP_DIR/config/sa-key.json" ]]; then
-    echo "{}" > "$APP_DIR/config/sa-key.json"
-    chmod 600 "$APP_DIR/config/sa-key.json"
+# Установка
+echo
+echo -e "${CYAN}📥 Установка VPS Watchdog v${VERSION}...${NC}"
+
+# Создаём директории
+mkdir -p "$INSTALL_DIR"/{app,bin,config,profiles,data,logs,docs}
+
+# Скачиваем файлы
+echo "Скачиваю файлы..."
+
+# Если установка из локальной директории (для разработки)
+if [[ -d "/home/claude/vps-watchdog-v3" ]]; then
+    echo "Копирую из локальной директории..."
+    cp -r /home/claude/vps-watchdog-v3/* "$INSTALL_DIR/"
+else
+    # Скачиваем из GitHub
+    TEMP_DIR=$(mktemp -d)
+    cd "$TEMP_DIR"
+    
+    curl -fsSL "${REPO_URL}/archive/refs/heads/main.tar.gz" -o repo.tar.gz
+    tar -xzf repo.tar.gz --strip-components=1
+    
+    cp -r * "$INSTALL_DIR/"
+    cd -
+    rm -rf "$TEMP_DIR"
 fi
 
-# 9. Systemd service
-success "Создаю systemd сервис..."
-cat > "$SERVICE_PATH" <<EOF
+# Права
+chmod +x "$INSTALL_DIR/bin/vps-watchdog"
+chmod 600 "$INSTALL_DIR/config/"* 2>/dev/null || true
+
+# Устанавливаем CLI команду
+ln -sf "$INSTALL_DIR/bin/vps-watchdog" /usr/local/bin/vps-watchdog
+
+# Создаём systemd service
+cat > /etc/systemd/system/vps-watchdog.service <<EOF
 [Unit]
-Description=VPS Watchdog - Auto-start VM (Yandex Cloud)
-After=network-online.target docker.service
-Wants=network-online.target
+Description=VPS Watchdog v3.0 - Multi-VM Monitor
+After=docker.service
 Requires=docker.service
 
 [Service]
-Type=oneshot
-WorkingDirectory=$APP_DIR
-ExecStart=/usr/bin/docker compose up -d --build
-ExecStop=/usr/bin/docker compose down
-RemainAfterExit=yes
-Restart=on-failure
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStartPre=/usr/bin/docker-compose -f $INSTALL_DIR/docker-compose.yml down
+ExecStart=/usr/bin/docker-compose -f $INSTALL_DIR/docker-compose.yml up --build
+ExecStop=/usr/bin/docker-compose -f $INSTALL_DIR/docker-compose.yml down
+Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+# Перезагружаем systemd
 systemctl daemon-reload
-systemctl enable vps-watchdog.service
 
 echo
-echo "═══════════════════════════════════════════════════════════════"
-success "Установка завершена!"
+echo -e "${GREEN}${BOLD}✅ VPS Watchdog v${VERSION} установлен!${NC}"
 echo
-echo "🚀 Что дальше?"
-echo "   1. Запусти меню:     sudo vps-watchdog"
-echo "   2. Выбери пункт 1:   Быстрая настройка"
-echo "   3. Следуй инструкциям"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
 echo
-echo "💡 Или настрой вручную:"
-echo "   sudo vps-watchdog"
-echo "   → пункт 2 (Настроить конфигурацию)"
-echo "   → пункт 3 (Настроить ключ)"
+echo -e "${BOLD}📋 ЧТО ДАЛЬШЕ:${NC}"
 echo
-echo "📖 Документация:"
-echo "   https://github.com/Mastachok/ya-vps-autostart"
-echo "═══════════════════════════════════════════════════════════════"
+echo "1️⃣  Запусти меню для настройки:"
+echo -e "   ${GREEN}sudo vps-watchdog${NC}"
+echo
+echo "2️⃣  Добавь профиль VM (пункт 2 в меню)"
+echo "   • Используй OAuth для автоматического добавления"
+echo "   • Скрипт сам найдёт все твои VM"
+echo
+echo "3️⃣  Настрой Telegram бота (пункт 6)"
+echo "   • Создай бота через @BotFather"
+echo "   • Укажи токен и chat_id"
+echo
+echo "4️⃣  Запусти сервис:"
+echo -e "   ${GREEN}sudo systemctl start vps-watchdog${NC}"
+echo
+echo "5️⃣  Проверь логи:"
+echo -e "   ${GREEN}sudo docker logs -f vps-watchdog${NC}"
+echo
+echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
+echo
+echo -e "${BOLD}📚 Документация:${NC} $REPO_URL"
+echo -e "${BOLD}🐛 Баги:${NC} $REPO_URL/issues"
+echo
