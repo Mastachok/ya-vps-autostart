@@ -601,12 +601,32 @@ get_vm_data_oauth() {
     fi
     
     echo
-    success "Токен получен"
+    success "OAuth токен получен"
+    
+    # Получаем IAM токен из OAuth токена
+    info "🔄 Получаю IAM токен..."
+    
+    iam_response=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"yandexPassportOauthToken\": \"$oauth_token\"}" \
+        "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+    
+    iam_token=$(echo "$iam_response" | jq -r '.iamToken // empty')
+    
+    if [[ -z "$iam_token" ]]; then
+        error "Не удалось получить IAM токен"
+        echo "Ответ API:"
+        echo "$iam_response" | jq .
+        pause
+        return
+    fi
+    
+    success "IAM токен получен"
     
     # Функция для API запросов
     yc_api() {
         curl -s -X "$1" \
-            -H "Authorization: Bearer $oauth_token" \
+            -H "Authorization: Bearer $iam_token" \
             -H "Content-Type: application/json" \
             "$2"
     }
