@@ -128,6 +128,9 @@ main_menu() {
         echo "  7) 📤 Тест уведомления"
         echo "  8) 📊 Статус бота"
         echo
+        echo -e "${BOLD}🔐 OAUTH:${NC}"
+        echo "  12) 🔑 Управление OAuth токеном"
+        echo
         echo -e "${BOLD}⚙️  СИСТЕМА:${NC}"
         echo "  9) 🔧 Управление сервисом"
         echo "  10) 📜 Показать логи"
@@ -152,6 +155,7 @@ main_menu() {
             9) service_menu ;;
             10) show_logs ;;
             11) show_stats ;;
+            12) manage_oauth ;;
             0) show_help ;;
             q|Q) exit 0 ;;
             *) warn "Неверный выбор"; pause ;;
@@ -231,28 +235,54 @@ add_profile_oauth() {
         }
     fi
     
-    # OAuth авторизация
-    info "🌐 АВТОРИЗАЦИЯ ЧЕРЕЗ БРАУЗЕР"
-    hr
-    echo
-    echo "1️⃣  Открой эту ссылку в браузере:"
-    echo
-    echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
-    echo
-    echo "2️⃣  Авторизуйся в Yandex"
-    echo "3️⃣  Разреши доступ к Yandex Cloud"
-    echo "4️⃣  Скопируй токен"
-    echo
-    
-    read -r -p "Вставь OAuth токен: " oauth_token
-    
-    if [[ -z "$oauth_token" ]]; then
-        error "Токен пустой"
-        pause
-        return
+    # Проверяем наличие сохранённого OAuth токена
+    oauth_token=""
+    if [[ -f "$CONFIG_DIR/oauth-token.txt" ]]; then
+        oauth_token=$(cat "$CONFIG_DIR/oauth-token.txt" 2>/dev/null | tr -d '\n\r ')
+        if [[ -n "$oauth_token" ]]; then
+            success "Найден сохранённый OAuth токен"
+            echo
+            read -r -p "Использовать сохранённый токен? (y/n): " use_saved
+            if [[ "$use_saved" =~ ^[Yy]$ ]]; then
+                info "Использую сохранённый OAuth токен"
+            else
+                oauth_token=""
+            fi
+        fi
     fi
     
-    success "OAuth токен получен"
+    # Если токена нет - запрашиваем новый
+    if [[ -z "$oauth_token" ]]; then
+        # OAuth авторизация
+        info "🌐 АВТОРИЗАЦИЯ ЧЕРЕЗ БРАУЗЕР"
+        hr
+        echo
+        echo "1️⃣  Открой эту ссылку в браузере:"
+        echo
+        echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+        echo
+        echo "2️⃣  Авторизуйся в Yandex"
+        echo "3️⃣  Разреши доступ к Yandex Cloud"
+        echo "4️⃣  Скопируй токен"
+        echo
+        
+        read -r -p "Вставь OAuth токен: " oauth_token
+        
+        if [[ -z "$oauth_token" ]]; then
+            error "Токен пустой"
+            pause
+            return
+        fi
+        
+        success "OAuth токен получен"
+        
+        # Сохраняем OAuth токен для будущего использования
+        info "💾 Сохраняю OAuth токен..."
+        mkdir -p "$CONFIG_DIR"
+        echo "$oauth_token" > "$CONFIG_DIR/oauth-token.txt"
+        chmod 600 "$CONFIG_DIR/oauth-token.txt"
+        success "OAuth токен сохранён в $CONFIG_DIR/oauth-token.txt"
+    fi
     
     # Получаем IAM токен
     info "🔄 Получаю IAM токен..."
@@ -520,13 +550,12 @@ PROFILE_JSON
     cat "$profile_file" | jq .
     echo
     
-    # Перезапускаем сервис
+    # Перезапускаем сервис в фоне
     info "🔄 Перезапускаю сервис..."
-    systemctl restart "$SERVICE" 2>&1
+    systemctl restart "$SERVICE" &>/dev/null &
     
-    sleep 2
-    
-    success "Готово! Профиль добавлен и мониторинг запущен!"
+    success "Готово! Профиль добавлен!"
+    info "Проверь логи: sudo docker logs -f vps-watchdog"
     echo
     info "Проверь логи: sudo docker logs -f vps-watchdog"
     
@@ -883,6 +912,159 @@ telegram_status() {
     fi
     
     pause
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# УПРАВЛЕНИЕ OAUTH
+# ═══════════════════════════════════════════════════════════════════
+
+manage_oauth() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "                🔑 УПРАВЛЕНИЕ OAUTH ТОКЕНОМ                    "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    oauth_file="$CONFIG_DIR/oauth-token.txt"
+    
+    # Проверяем наличие токена
+    if [[ -f "$oauth_file" ]]; then
+        oauth_token=$(cat "$oauth_file" 2>/dev/null)
+        token_preview="${oauth_token:0:20}...${oauth_token: -10}"
+        
+        success "OAuth токен найден"
+        echo "   Файл: $oauth_file"
+        echo "   Токен: $token_preview"
+        echo
+        
+        # Проверяем валидность токена
+        info "🔄 Проверяю валидность токена..."
+        
+        iam_response=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"yandexPassportOauthToken\": \"$oauth_token\"}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+        
+        if echo "$iam_response" | jq -e '.iamToken' >/dev/null 2>&1; then
+            success "✅ Токен валиден"
+        else
+            error "❌ Токен невалиден или истёк"
+            echo
+            warn "Возможные причины:"
+            echo "   • Токен устарел (срок действия OAuth токенов ограничен)"
+            echo "   • Токен был отозван в настройках аккаунта"
+            echo "   • Проблемы с интернет-соединением"
+        fi
+        
+        echo
+        hr
+        echo
+        echo "  1) 🔄 Обновить токен"
+        echo "  2) 🗑️  Удалить токен"
+        echo "  3) 👁️  Показать полный токен"
+        echo "  0) ← Назад"
+        echo
+        
+        read -r -p "Выбери: " choice
+        
+        case $choice in
+            1)
+                info "🌐 Получение нового OAuth токена"
+                echo
+                echo "Открой эту ссылку в браузере:"
+                echo
+                echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+                echo
+                read -r -p "Вставь новый OAuth токен: " new_token
+                
+                if [[ -n "$new_token" ]]; then
+                    echo "$new_token" > "$oauth_file"
+                    chmod 600 "$oauth_file"
+                    success "Токен обновлён!"
+                    
+                    # Перезапускаем сервис
+                    info "🔄 Перезапускаю сервис..."
+                    systemctl restart "$SERVICE" &>/dev/null &
+                    success "Сервис перезапускается"
+                else
+                    error "Токен пустой"
+                fi
+                pause
+                ;;
+            2)
+                warn "Удалить OAuth токен?"
+                echo "   ⚠️  После удаления потребуется новая авторизация"
+                echo
+                read -r -p "(yes/no): " confirm
+                
+                if [[ "$confirm" == "yes" ]]; then
+                    rm -f "$oauth_file"
+                    success "Токен удалён"
+                else
+                    info "Отменено"
+                fi
+                pause
+                ;;
+            3)
+                echo
+                info "Полный OAuth токен:"
+                echo
+                echo -e "${CYAN}$oauth_token${NC}"
+                echo
+                warn "⚠️  Не делись этим токеном!"
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warn "Неверный выбор"
+                pause
+                ;;
+        esac
+    else
+        warn "OAuth токен не найден"
+        echo
+        info "Токен будет создан автоматически при добавлении первого профиля"
+        echo "   через пункт меню: 2) ➕ Добавить профиль (OAuth)"
+        echo
+        hr
+        echo
+        echo "  1) 🔑 Добавить OAuth токен вручную"
+        echo "  0) ← Назад"
+        echo
+        
+        read -r -p "Выбери: " choice
+        
+        case $choice in
+            1)
+                info "🌐 Получение OAuth токена"
+                echo
+                echo "Открой эту ссылку в браузере:"
+                echo
+                echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+                echo
+                read -r -p "Вставь OAuth токен: " new_token
+                
+                if [[ -n "$new_token" ]]; then
+                    mkdir -p "$CONFIG_DIR"
+                    echo "$new_token" > "$oauth_file"
+                    chmod 600 "$oauth_file"
+                    success "Токен сохранён!"
+                else
+                    error "Токен пустой"
+                fi
+                pause
+                ;;
+            0)
+                return
+                ;;
+            *)
+                warn "Неверный выбор"
+                pause
+                ;;
+        esac
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════════
