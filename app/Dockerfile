@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir \
 WORKDIR /app
 
 # Копируем приложение
-COPY app/*.py /app/
+COPY *.py /app/
 
 # Создаём директории
 RUN mkdir -p /app/config /app/profiles /app/data /app/logs
