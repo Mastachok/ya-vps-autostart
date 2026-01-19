@@ -505,8 +505,7 @@ MIT License - см. [LICENSE](LICENSE)
 
 ## 📞 Поддержка
 
-- 📧 Email: support@example.com
-- 💬 Telegram: @vps_watchdog_support
+- 💬 Telegram: https://t.me/whitelists_ru
 - 🐛 Issues: [GitHub Issues](https://github.com/Mastachok/ya-vps-autostart/issues)
 
 ---
@@ -519,5 +518,3 @@ MIT License - см. [LICENSE](LICENSE)
 - [Changelog](CHANGELOG.md)
 
 ---
-
-**Made with ❤️ for reliable infrastructure**
