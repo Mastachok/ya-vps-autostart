@@ -3,8 +3,8 @@ version: '3.8'
 services:
   vps-watchdog:
     build:
-      context: .
-      dockerfile: app/Dockerfile
+      context: ./app
+      dockerfile: Dockerfile
     container_name: vps-watchdog
     restart: unless-stopped
     network_mode: "host"
