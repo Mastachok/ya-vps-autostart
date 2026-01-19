@@ -10,6 +10,7 @@ services:
     network_mode: "host"
     volumes:
       - ./config:/app/config:ro
+      - ./config:/opt/vps-watchdog/config:ro
       - ./profiles:/app/profiles:ro
       - ./data:/app/data
       - ./logs:/app/logs
