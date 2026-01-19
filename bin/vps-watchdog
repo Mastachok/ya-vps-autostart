@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════
-# VPS WATCHDOG v3.0.1-SA - Интерактивное меню (Service Account)
+# VPS WATCHDOG v3.0.2-SA - С мастером первоначальной настройки
 # ═══════════════════════════════════════════════════════════════════
 
-VERSION="3.0.1-SA"
+VERSION="3.0.2-SA"
 CONFIG_DIR="/opt/vps-watchdog/config"
 PROFILES_DIR="/opt/vps-watchdog/profiles"
 DATA_DIR="/opt/vps-watchdog/data"
@@ -77,11 +77,218 @@ check_sa_key() {
     fi
 }
 
+is_first_run() {
+    # Первый запуск если нет ни SA ключа, ни профилей
+    if [[ ! -f "$SA_KEY_FILE" ]] && [[ $(count_profiles | cut -d' ' -f1) -eq 0 ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# МАСТЕР ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ
+# ═══════════════════════════════════════════════════════════════════
+
+setup_wizard() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "          🎯 МАСТЕР ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ                  "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    warn "Первый запуск! Настроим VPS Watchdog за 3 шага:"
+    echo
+    echo "  1️⃣  Добавим Service Account ключ"
+    echo "  2️⃣  Создадим профиль VM для мониторинга"
+    echo "  3️⃣  Запустим мониторинг"
+    echo
+    
+    read -r -p "Начать настройку? (y/n): " start
+    if [[ ! "$start" =~ ^[Yy]$ ]]; then
+        return
+    fi
+    
+    # ШАГ 1: SA КЛЮЧ
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "          ШАГ 1/3: SERVICE ACCOUNT КЛЮЧ                       "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    info "Сначала нужно добавить SA ключ из Yandex Cloud"
+    echo
+    echo "У тебя уже есть SA ключ?"
+    echo "  1) Да, я его создал и скачал"
+    echo "  2) Нет, покажи инструкцию"
+    echo
+    
+    read -r -p "Выбор: " has_key
+    
+    if [[ "$has_key" == "2" ]]; then
+        clear
+        title "📝 ИНСТРУКЦИЯ: Создание SA ключа (5 минут)"
+        hr
+        echo
+        echo "1️⃣  Открой: ${GREEN}https://console.yandex.cloud/${NC}"
+        echo
+        echo "2️⃣  IAM → Service accounts → ${BOLD}Create${NC}"
+        echo "    Имя: ${GREEN}vps-watchdog-sa${NC}"
+        echo "    Роль: ${GREEN}compute.admin${NC}"
+        echo "    → Нажми ${BOLD}Create${NC}"
+        echo
+        echo "3️⃣  Открой созданный SA → ${BOLD}Keys${NC}"
+        echo "    → ${BOLD}Create new key${NC}"
+        echo "    → ${BOLD}Create authorized key${NC}"
+        echo "    Формат: ${GREEN}JSON${NC}"
+        echo "    → Нажми ${BOLD}Create${NC}"
+        echo
+        echo "4️⃣  Файл ${GREEN}key.json${NC} скачается"
+        echo
+        pause
+    fi
+    
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "          ШАГ 1/3: ЗАГРУЗКА SA КЛЮЧА                          "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    info "Открою редактор nano. Вставь содержимое файла key.json:"
+    echo
+    echo "  1. Открой key.json на компьютере"
+    echo "  2. Скопируй ВСЁ (Ctrl+A, Ctrl+C)"
+    echo "  3. Вернись сюда и вставь (правая кнопка мыши)"
+    echo "  4. Сохрани: Ctrl+O → Enter → Ctrl+X"
+    echo
+    
+    read -r -p "Нажми Enter когда готов..."
+    
+    mkdir -p "$CONFIG_DIR"
+    nano "$SA_KEY_FILE"
+    
+    if [[ ! -f "$SA_KEY_FILE" ]] || [[ ! -s "$SA_KEY_FILE" ]]; then
+        error "Файл пустой или не создан"
+        warn "Запусти снова: vps-watchdog"
+        exit 1
+    fi
+    
+    chmod 600 "$SA_KEY_FILE"
+    
+    if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
+        success "SA ключ сохранён!"
+    else
+        error "JSON некорректный! Проверь и запусти снова"
+        exit 1
+    fi
+    
+    echo
+    pause
+    
+    # ШАГ 2: ПРОФИЛЬ
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "          ШАГ 2/3: СОЗДАНИЕ ПРОФИЛЯ VM                        "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    info "Теперь добавим VM для мониторинга"
+    echo
+    echo "Тебе понадобятся данные VM из Yandex Cloud:"
+    echo "  • Имя VM"
+    echo "  • IP адрес"
+    echo "  • Instance ID (из консоли)"
+    echo "  • Folder ID (из консоли)"
+    echo
+    
+    read -r -p "Готов ввести данные? (y/n): " ready
+    if [[ ! "$ready" =~ ^[Yy]$ ]]; then
+        warn "Профиль можно добавить позже через меню"
+        return
+    fi
+    
+    echo
+    read -r -p "Имя VM: " vm_name
+    read -r -p "IP адрес VM: " vm_host
+    read -r -p "Instance ID: " instance_id
+    read -r -p "Folder ID: " folder_id
+    
+    if [[ -z "$vm_name" ]] || [[ -z "$vm_host" ]] || [[ -z "$instance_id" ]] || [[ -z "$folder_id" ]]; then
+        error "Все поля обязательны!"
+        warn "Профиль можно добавить позже через меню"
+        pause
+        return
+    fi
+    
+    echo
+    info "💾 Создаю профиль..."
+    
+    profile_id=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
+    profile_file="$PROFILES_DIR/${profile_id}.json"
+    
+    mkdir -p "$PROFILES_DIR"
+    
+    cat > "$profile_file" <<PROFEOF
+{
+  "id": "${profile_id}",
+  "name": "${vm_name}",
+  "vm_host": "${vm_host}",
+  "instance_id": "${instance_id}",
+  "folder_id": "${folder_id}",
+  "enabled": true,
+  "check_interval": 60,
+  "ping_count": 3,
+  "ping_timeout": 5,
+  "cooldown_minutes": 5,
+  "max_start_attempts": 3,
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)"
+}
+PROFEOF
+    
+    if [[ -f "$profile_file" ]]; then
+        success "Профиль создан!"
+    fi
+    
+    echo
+    pause
+    
+    # ШАГ 3: ЗАПУСК
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "          ШАГ 3/3: ЗАПУСК МОНИТОРИНГА                         "
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    success "Настройка завершена!"
+    echo
+    info "Запускаю мониторинг..."
+    
+    systemctl restart "$SERVICE" &>/dev/null &
+    
+    echo
+    success "Готово! Мониторинг запущен!"
+    echo
+    info "Проверь логи:"
+    echo "  ${GREEN}docker logs -f vps-watchdog${NC}"
+    echo
+    info "Для управления:"
+    echo "  ${GREEN}vps-watchdog${NC}"
+    echo
+    
+    pause
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # ГЛАВНОЕ МЕНЮ
 # ═══════════════════════════════════════════════════════════════════
 
 main_menu() {
+    # Проверяем первый запуск
+    if is_first_run; then
+        setup_wizard
+        return
+    fi
+    
     while true; do
         clear
         read -r total enabled <<< "$(count_profiles)"
@@ -100,6 +307,46 @@ main_menu() {
         hr
         echo
         
+        # Показываем разные меню в зависимости от статуса
+        if [[ ! -f "$SA_KEY_FILE" ]]; then
+            warn "SA ключ не найден! Сначала добавь его:"
+            echo
+            echo "  1) 📥 Добавить SA ключ"
+            echo "  0) ❓ Инструкция"
+            echo "  q) 🚪 Выход"
+            echo
+            read -r -p "Выбери пункт: " choice
+            
+            case "$choice" in
+                1) upload_sa_key ;;
+                0) show_sa_help ;;
+                q|Q) exit 0 ;;
+                *) error "Неверный выбор"; pause ;;
+            esac
+            continue
+        fi
+        
+        if [[ $total -eq 0 ]]; then
+            warn "Нет профилей! Добавь первый профиль:"
+            echo
+            echo "  1) ➕ Добавить профиль VM"
+            echo "  2) 📥 Изменить SA ключ"
+            echo "  0) ❓ Помощь"
+            echo "  q) 🚪 Выход"
+            echo
+            read -r -p "Выбери пункт: " choice
+            
+            case "$choice" in
+                1) add_profile ;;
+                2) upload_sa_key ;;
+                0) show_help ;;
+                q|Q) exit 0 ;;
+                *) error "Неверный выбор"; pause ;;
+            esac
+            continue
+        fi
+        
+        # Полное меню когда всё настроено
         echo -e "${BOLD}📋 УПРАВЛЕНИЕ ПРОФИЛЯМИ:${NC}"
         echo "  1) 📝 Список профилей"
         echo "  2) ➕ Добавить профиль"
@@ -121,7 +368,7 @@ main_menu() {
         echo
         
         echo -e "${BOLD}🔐 SERVICE ACCOUNT:${NC}"
-        echo "  12) 📥 Загрузить SA ключ"
+        echo "  12) 📥 Изменить SA ключ"
         echo "  13) 🔍 Проверить SA ключ"
         echo
         
@@ -157,60 +404,57 @@ main_menu() {
 # SA КЛЮЧ
 # ═══════════════════════════════════════════════════════════════════
 
+show_sa_help() {
+    clear
+    title "📝 КАК СОЗДАТЬ SERVICE ACCOUNT КЛЮЧ"
+    hr
+    echo
+    echo "1️⃣  Открой: ${GREEN}https://console.yandex.cloud/${NC}"
+    echo
+    echo "2️⃣  IAM → Service accounts → ${BOLD}Create${NC}"
+    echo "    Имя: ${GREEN}vps-watchdog-sa${NC}"
+    echo "    Роль: ${GREEN}compute.admin${NC}"
+    echo
+    echo "3️⃣  Keys → Create new key → Create authorized key"
+    echo "    Формат: ${GREEN}JSON${NC}"
+    echo
+    echo "4️⃣  Скачай ${GREEN}key.json${NC}"
+    echo
+    echo "5️⃣  Вернись в меню → пункт 1"
+    echo
+    pause
+}
+
 upload_sa_key() {
     clear
     title "📥 ЗАГРУЗКА SERVICE ACCOUNT КЛЮЧА"
     hr
     echo
     
-    info "Выбери способ:"
-    echo "  1) 📝 Открыть в nano и вставить"
-    echo "  2) 📋 Инструкция по созданию SA"
-    echo "  3) 🔙 Назад"
+    info "Открою редактор nano для вставки SA ключа"
+    echo
+    echo "Что делать:"
+    echo "  1. Открой файл key.json на компьютере"
+    echo "  2. Скопируй ВСЁ содержимое (Ctrl+A, Ctrl+C)"
+    echo "  3. Вернись сюда, вставь (правая кнопка мыши)"
+    echo "  4. Сохрани: Ctrl+O → Enter → Ctrl+X"
     echo
     
-    read -r -p "Выбор: " method
+    read -r -p "Нажми Enter когда готов..."
     
-    case "$method" in
-        1)
-            mkdir -p "$CONFIG_DIR"
-            info "Открываю редактор..."
-            nano "$SA_KEY_FILE"
-            
-            if [[ -f "$SA_KEY_FILE" ]] && [[ -s "$SA_KEY_FILE" ]]; then
-                chmod 600 "$SA_KEY_FILE"
-                if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
-                    success "SA ключ сохранён!"
-                else
-                    error "JSON некорректный"
-                fi
-            fi
-            ;;
-        2)
-            clear
-            title "📝 КАК СОЗДАТЬ SERVICE ACCOUNT КЛЮЧ"
-            hr
-            echo
-            echo "1️⃣  Открой: https://console.yandex.cloud/"
-            echo "2️⃣  IAM → Service accounts → Create"
-            echo "3️⃣  Имя: vps-watchdog-sa"
-            echo "4️⃣  Роль: compute.admin"
-            echo "5️⃣  Нажми Create"
-            echo "6️⃣  Keys → Create new key → Create authorized key"
-            echo "7️⃣  Формат: JSON → Create"
-            echo "8️⃣  Скачай файл key.json"
-            echo
-            info "Затем:"
-            echo "  - Открой key.json на компьютере"
-            echo "  - Скопируй весь текст (Ctrl+A, Ctrl+C)"
-            echo "  - Вернись в это меню → пункт 1"
-            echo "  - Вставь в nano (правая кнопка мыши)"
-            echo "  - Ctrl+O, Enter, Ctrl+X"
-            ;;
-        *)
-            return
-            ;;
-    esac
+    mkdir -p "$CONFIG_DIR"
+    nano "$SA_KEY_FILE"
+    
+    if [[ -f "$SA_KEY_FILE" ]] && [[ -s "$SA_KEY_FILE" ]]; then
+        chmod 600 "$SA_KEY_FILE"
+        if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
+            success "SA ключ сохранён!"
+        else
+            error "JSON некорректный, проверь и попробуй снова"
+        fi
+    else
+        warn "Файл пустой"
+    fi
     
     pause
 }
@@ -223,7 +467,7 @@ verify_sa_key() {
     
     if [[ ! -f "$SA_KEY_FILE" ]]; then
         error "SA ключ не найден!"
-        warn "Создай через пункт 12"
+        warn "Добавь через пункт 12"
         pause
         return
     fi
@@ -255,7 +499,7 @@ verify_sa_key() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# ДОБАВЛЕНИЕ ПРОФИЛЯ (упрощённая версия)
+# ДОБАВЛЕНИЕ ПРОФИЛЯ
 # ═══════════════════════════════════════════════════════════════════
 
 add_profile() {
@@ -264,7 +508,6 @@ add_profile() {
     hr
     echo
     
-    # Проверяем SA ключ
     if [[ ! -f "$SA_KEY_FILE" ]]; then
         error "SA ключ не найден!"
         warn "Сначала добавь SA ключ (пункт 12)"
@@ -326,52 +569,27 @@ PROFEOF
     
     pause
 }
-    for file in "$PROFILES_DIR"/*.json; do
-        [[ -f "$file" ]] || continue
-        
-        local name=$(jq -r '.name' "$file")
-        local vm_host=$(jq -r '.vm_host' "$file")
-        local instance_id=$(jq -r '.instance_id' "$file")
-        local enabled=$(jq -r '.enabled' "$file")
-        local check_interval=$(jq -r '.check_interval' "$file")
-        
-        local status_icon="🔴"
-        local status_text="выключен"
-        if [[ "$enabled" == "true" ]]; then
-            status_icon="🟢"
-            status_text="${GREEN}включен${NC}"
-        fi
-        
-        echo -e "${BOLD}$i) $status_icon $name${NC}"
-        echo "   IP:       $vm_host"
-        echo "   ID:       ${instance_id:0:20}..."
-        echo -e "   Статус:   $status_text"
-        echo "   Интервал: ${check_interval}с"
-        echo
-        
-        ((i++))
-    done
-    
+
+show_help() {
+    clear
+    title "❓ ПОМОЩЬ"
     hr
+    echo
+    info "VPS Watchdog автоматически мониторит и перезапускает VM"
+    echo
+    echo "Порядок настройки:"
+    echo "  1. Добавь SA ключ (пункт 12)"
+    echo "  2. Создай профиль VM (пункт 2)"
+    echo "  3. Настрой Telegram бота (опционально, пункт 6)"
+    echo
+    echo "Логи:"
+    echo "  docker logs -f vps-watchdog"
+    echo
+    echo "Документация:"
+    echo "  https://github.com/Mastachok/ya-vps-autostart"
+    echo
     pause
 }
-
-    success "Профиль создан: $profile_file"
-    
-    # Показываем содержимое
-    echo
-    info "Содержимое профиля:"
-    cat "$profile_file" | jq .
-    echo
-    
-    # Перезапускаем сервис в фоне
-    info "🔄 Перезапускаю сервис..."
-    systemctl restart "$SERVICE" &>/dev/null &
-    
-    success "Готово! Профиль добавлен!"
-    info "Проверь логи: sudo docker logs -f vps-watchdog"
-    echo
-    info "Проверь логи: sudo docker logs -f vps-watchdog"
     
     pause
 }
@@ -1192,6 +1410,21 @@ show_help() {
     pause
 }
 
+# ═══════════════════════════════════════════════════════════════════
+# ЗАПУСК
+# ═══════════════════════════════════════════════════════════════════
+
+# Проверка прав
+if [[ $EUID -ne 0 ]]; then
+    error "Запусти с правами root: sudo vps-watchdog"
+    exit 1
+fi
+
+# Создаём директории
+mkdir -p "$CONFIG_DIR" "$PROFILES_DIR" "$DATA_DIR"
+
+# Запускаем меню
+main_menu
 -e 
-# Запуск главного меню
+# Запуск
 main_menu
