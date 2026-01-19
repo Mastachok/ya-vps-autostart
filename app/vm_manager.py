@@ -59,7 +59,7 @@ class VMProfile:
 class VMProfileManager:
     """Менеджер профилей VM"""
     
-    def __init__(self, profiles_dir: str = "/opt/vps-watchdog/profiles"):
+    def __init__(self, profiles_dir: str = "/app/profiles"):
         self.profiles_dir = Path(profiles_dir)
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
         
