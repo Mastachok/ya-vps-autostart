@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════
-# VPS WATCHDOG v3.0.2-SA - С мастером первоначальной настройки
+# VPS WATCHDOG v3.0 - Интерактивное меню
 # ═══════════════════════════════════════════════════════════════════
 
-VERSION="3.0.2-SA"
+VERSION="3.0.1"
 CONFIG_DIR="/opt/vps-watchdog/config"
 PROFILES_DIR="/opt/vps-watchdog/profiles"
 DATA_DIR="/opt/vps-watchdog/data"
-SA_KEY_FILE="$CONFIG_DIR/sa-key.json"
+KEY_FILE="$CONFIG_DIR/sa-key.json"
 TELEGRAM_CONFIG="$CONFIG_DIR/telegram.json"
 SERVICE="vps-watchdog"
 
@@ -24,28 +24,65 @@ BOLD='\033[1m'
 GRAY='\033[0;90m'
 NC='\033[0m'
 
-# Вспомогательные функции
-title() { echo -e "${CYAN}${BOLD}$1${NC}"; }
-success() { echo -e "${GREEN}✅ $1${NC}"; }
-error() { echo -e "${RED}❌ $1${NC}"; }
-warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
-info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
-hr() { echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
-pause() { echo; read -r -p "Нажми Enter для продолжения..."; }
+# ═══════════════════════════════════════════════════════════════════
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ═══════════════════════════════════════════════════════════════════
+
+title() {
+    echo -e "${CYAN}${BOLD}$1${NC}"
+}
+
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+hr() {
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+pause() {
+    echo
+    read -r -p "Нажми Enter для продолжения..."
+}
 
 count_profiles() {
     mkdir -p "$PROFILES_DIR" 2>/dev/null || true
-    local total=$(find "$PROFILES_DIR" -maxdepth 1 -name "*.json" -type f 2>/dev/null | wc -l)
+    
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        echo "0 0"
+        return
+    fi
+    
+    local total=0
     local enabled=0
     
-    if command -v jq >/dev/null 2>&1; then
-        for file in "$PROFILES_DIR"/*.json 2>/dev/null; do
-            [[ -f "$file" ]] || continue
-            if jq -e '.enabled == true' "$file" >/dev/null 2>&1; then
-                ((enabled++)) || true
-            fi
-        done
+    total=$(find "$PROFILES_DIR" -maxdepth 1 -name "*.json" -type f 2>/dev/null | wc -l)
+    
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "$total ?"
+        return
     fi
+    
+    shopt -s nullglob
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        if jq -e '.enabled == true' "$file" >/dev/null 2>&1; then
+            enabled=$((enabled + 1))
+        fi
+    done
+    shopt -u nullglob
     echo "$total $enabled"
 }
 
@@ -60,34 +97,42 @@ get_service_status() {
 get_telegram_status() {
     if [[ -f "$TELEGRAM_CONFIG" ]]; then
         if jq -e '.enabled == true' "$TELEGRAM_CONFIG" >/dev/null 2>&1; then
-            echo -e "${GREEN}настроен${NC}"
+            echo -e "${GREEN}подключен${NC}"
         else
-            echo -e "${YELLOW}выключен${NC}"
+            echo -e "${YELLOW}отключен${NC}"
         fi
     else
         echo -e "${GRAY}не настроен${NC}"
     fi
 }
 
-check_sa_key() {
-    if [[ -f "$SA_KEY_FILE" ]]; then
+get_sa_status() {
+    if [[ -f "$CONFIG_DIR/sa-key.json" ]] && jq . "$CONFIG_DIR/sa-key.json" >/dev/null 2>&1; then
         echo -e "${GREEN}настроен${NC}"
     else
-        echo -e "${YELLOW}не найден${NC}"
+        echo -e "${RED}отсутствует${NC}"
     fi
 }
 
-is_first_run() {
-    # Первый запуск если нет ни SA ключа, ни профилей
-    if [[ ! -f "$SA_KEY_FILE" ]] && [[ $(count_profiles | cut -d' ' -f1) -eq 0 ]]; then
-        return 0
-    fi
-    return 1
-}
+# ═══════════════════════════════════════════════════════════════════
+# ГЛАВНОЕ МЕНЮ
+# ═══════════════════════════════════════════════════════════════════
+
 
 # ═══════════════════════════════════════════════════════════════════
 # МАСТЕР ПЕРВОНАЧАЛЬНОЙ НАСТРОЙКИ
 # ═══════════════════════════════════════════════════════════════════
+
+is_first_run() {
+    # Первый запуск если нет ни SA ключа, ни профилей
+    if [[ ! -f "$SA_KEY_FILE" ]]; then
+        local profile_count=$(count_profiles | cut -d' ' -f1)
+        if [[ "$profile_count" -eq 0 ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
 
 setup_wizard() {
     clear
@@ -105,6 +150,7 @@ setup_wizard() {
     
     read -r -p "Начать настройку? (y/n): " start
     if [[ ! "$start" =~ ^[Yy]$ ]]; then
+        info "Настройку можно запустить позже, просто запусти: vps-watchdog"
         return
     fi
     
@@ -126,7 +172,7 @@ setup_wizard() {
     
     if [[ "$has_key" == "2" ]]; then
         clear
-        title "📝 ИНСТРУКЦИЯ: Создание SA ключа (5 минут)"
+        title "📝 ИНСТРУКЦИЯ: Создание SA ключа"
         hr
         echo
         echo "1️⃣  Открой: ${GREEN}https://console.yandex.cloud/${NC}"
@@ -147,42 +193,15 @@ setup_wizard() {
         pause
     fi
     
-    clear
-    title "═══════════════════════════════════════════════════════════════"
-    title "          ШАГ 1/3: ЗАГРУЗКА SA КЛЮЧА                          "
-    title "═══════════════════════════════════════════════════════════════"
-    echo
+    # Вызываем функцию загрузки SA ключа
+    upload_sa_key
     
-    info "Открою редактор nano. Вставь содержимое файла key.json:"
-    echo
-    echo "  1. Открой key.json на компьютере"
-    echo "  2. Скопируй ВСЁ (Ctrl+A, Ctrl+C)"
-    echo "  3. Вернись сюда и вставь (правая кнопка мыши)"
-    echo "  4. Сохрани: Ctrl+O → Enter → Ctrl+X"
-    echo
-    
-    read -r -p "Нажми Enter когда готов..."
-    
-    mkdir -p "$CONFIG_DIR"
-    nano "$SA_KEY_FILE"
-    
-    if [[ ! -f "$SA_KEY_FILE" ]] || [[ ! -s "$SA_KEY_FILE" ]]; then
-        error "Файл пустой или не создан"
+    if [[ ! -f "$SA_KEY_FILE" ]]; then
+        error "SA ключ не создан, настройка прервана"
         warn "Запусти снова: vps-watchdog"
-        exit 1
+        pause
+        return
     fi
-    
-    chmod 600 "$SA_KEY_FILE"
-    
-    if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
-        success "SA ключ сохранён!"
-    else
-        error "JSON некорректный! Проверь и запусти снова"
-        exit 1
-    fi
-    
-    echo
-    pause
     
     # ШАГ 2: ПРОФИЛЬ
     clear
@@ -193,64 +212,16 @@ setup_wizard() {
     
     info "Теперь добавим VM для мониторинга"
     echo
-    echo "Тебе понадобятся данные VM из Yandex Cloud:"
-    echo "  • Имя VM"
-    echo "  • IP адрес"
-    echo "  • Instance ID (из консоли)"
-    echo "  • Folder ID (из консоли)"
-    echo
     
-    read -r -p "Готов ввести данные? (y/n): " ready
+    read -r -p "Готов ввести данные VM? (y/n): " ready
     if [[ ! "$ready" =~ ^[Yy]$ ]]; then
-        warn "Профиль можно добавить позже через меню"
-        return
-    fi
-    
-    echo
-    read -r -p "Имя VM: " vm_name
-    read -r -p "IP адрес VM: " vm_host
-    read -r -p "Instance ID: " instance_id
-    read -r -p "Folder ID: " folder_id
-    
-    if [[ -z "$vm_name" ]] || [[ -z "$vm_host" ]] || [[ -z "$instance_id" ]] || [[ -z "$folder_id" ]]; then
-        error "Все поля обязательны!"
-        warn "Профиль можно добавить позже через меню"
+        warn "Профиль можно добавить позже через меню (пункт 2)"
         pause
         return
     fi
     
-    echo
-    info "💾 Создаю профиль..."
-    
-    profile_id=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
-    profile_file="$PROFILES_DIR/${profile_id}.json"
-    
-    mkdir -p "$PROFILES_DIR"
-    
-    cat > "$profile_file" <<PROFEOF
-{
-  "id": "${profile_id}",
-  "name": "${vm_name}",
-  "vm_host": "${vm_host}",
-  "instance_id": "${instance_id}",
-  "folder_id": "${folder_id}",
-  "enabled": true,
-  "check_interval": 60,
-  "ping_count": 3,
-  "ping_timeout": 5,
-  "cooldown_minutes": 5,
-  "max_start_attempts": 3,
-  "created_at": "$(date -Iseconds)",
-  "updated_at": "$(date -Iseconds)"
-}
-PROFEOF
-    
-    if [[ -f "$profile_file" ]]; then
-        success "Профиль создан!"
-    fi
-    
-    echo
-    pause
+    # Вызываем функцию добавления профиля
+    add_profile
     
     # ШАГ 3: ЗАПУСК
     clear
@@ -278,20 +249,23 @@ PROFEOF
     pause
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# ГЛАВНОЕ МЕНЮ
-# ═══════════════════════════════════════════════════════════════════
-
 main_menu() {
-    # Проверяем первый запуск
+    # Проверка первого запуска
     if is_first_run; then
         setup_wizard
-        return
+        # Если после мастера всё ещё нет SA ключа - выходим
+        if [[ ! -f "$SA_KEY_FILE" ]]; then
+            return
+        fi
     fi
-    
+
     while true; do
         clear
-        read -r total enabled <<< "$(count_profiles)"
+        # ИСПРАВЛЕНО: Безопасное чтение профилей без process substitution
+        local profile_info
+        profile_info=$(count_profiles)
+        local total=$(echo "$profile_info" | cut -d' ' -f1)
+        local enabled=$(echo "$profile_info" | cut -d' ' -f2)
         
         title "═══════════════════════════════════════════════════════════════"
         title "           🛡️  VPS WATCHDOG v${VERSION}                        "
@@ -302,51 +276,10 @@ main_menu() {
         echo -e "   📝 Профилей: ${BOLD}$total${NC} (активных: ${GREEN}$enabled${NC})"
         echo -e "   ⚙️  Сервис: $(get_service_status)"
         echo -e "   📱 Telegram: $(get_telegram_status)"
-        echo -e "   🔑 SA ключ: $(check_sa_key)"
+        echo -e "   🔑 SA ключ: $(get_sa_status)"
         
         hr
         echo
-        
-        # Показываем разные меню в зависимости от статуса
-        if [[ ! -f "$SA_KEY_FILE" ]]; then
-            warn "SA ключ не найден! Сначала добавь его:"
-            echo
-            echo "  1) 📥 Добавить SA ключ"
-            echo "  0) ❓ Инструкция"
-            echo "  q) 🚪 Выход"
-            echo
-            read -r -p "Выбери пункт: " choice
-            
-            case "$choice" in
-                1) upload_sa_key ;;
-                0) show_sa_help ;;
-                q|Q) exit 0 ;;
-                *) error "Неверный выбор"; pause ;;
-            esac
-            continue
-        fi
-        
-        if [[ $total -eq 0 ]]; then
-            warn "Нет профилей! Добавь первый профиль:"
-            echo
-            echo "  1) ➕ Добавить профиль VM"
-            echo "  2) 📥 Изменить SA ключ"
-            echo "  0) ❓ Помощь"
-            echo "  q) 🚪 Выход"
-            echo
-            read -r -p "Выбери пункт: " choice
-            
-            case "$choice" in
-                1) add_profile ;;
-                2) upload_sa_key ;;
-                0) show_help ;;
-                q|Q) exit 0 ;;
-                *) error "Неверный выбор"; pause ;;
-            esac
-            continue
-        fi
-        
-        # Полное меню когда всё настроено
         echo -e "${BOLD}📋 УПРАВЛЕНИЕ ПРОФИЛЯМИ:${NC}"
         echo "  1) 📝 Список профилей"
         echo "  2) ➕ Добавить профиль"
@@ -354,24 +287,21 @@ main_menu() {
         echo "  4) 🗑️  Удалить профиль"
         echo "  5) 🔄 Включить/выключить мониторинг"
         echo
-        
         echo -e "${BOLD}📱 TELEGRAM:${NC}"
         echo "  6) 🤖 Настроить бота"
         echo "  7) 📤 Тест уведомления"
         echo "  8) 📊 Статус бота"
         echo
-        
         echo -e "${BOLD}⚙️  СИСТЕМА:${NC}"
         echo "  9) 🔧 Управление сервисом"
         echo "  10) 📜 Показать логи"
-        echo "  11) 📊 Статистика"
+        echo "  11) 📈 Статистика"
         echo
-        
-        echo -e "${BOLD}🔐 SERVICE ACCOUNT:${NC}"
-        echo "  12) 📥 Изменить SA ключ"
-        echo "  13) 🔍 Проверить SA ключ"
+        echo -e "${BOLD}🔐 АВТОРИЗАЦИЯ:${NC}"
+        echo "  12) 🔑 Управление OAuth токеном"
+        echo "  13) 📤 Загрузить SA ключ"
+        echo "  14) 🔍 Проверить SA ключ"
         echo
-        
         echo -e "${BOLD}ℹ️  ИНФОРМАЦИЯ:${NC}"
         echo "  0) ❓ Помощь"
         echo "  q) 🚪 Выход"
@@ -379,7 +309,7 @@ main_menu() {
         
         read -r -p "Выбери пункт: " choice
         
-        case "$choice" in
+        case $choice in
             1) list_profiles ;;
             2) add_profile ;;
             3) edit_profile ;;
@@ -388,157 +318,355 @@ main_menu() {
             6) setup_telegram ;;
             7) test_telegram ;;
             8) telegram_status ;;
-            9) manage_service ;;
+            9) service_menu ;;
             10) show_logs ;;
             11) show_stats ;;
-            12) upload_sa_key ;;
-            13) verify_sa_key ;;
+            12) manage_oauth ;;
+            13) upload_sa_key ;;
+            14) verify_sa_key ;;
+            14) check_sa_key ;;
             0) show_help ;;
             q|Q) exit 0 ;;
-            *) error "Неверный выбор"; pause ;;
+            *) warn "Неверный выбор"; pause ;;
         esac
     done
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# SA КЛЮЧ
+# УПРАВЛЕНИЕ ПРОФИЛЯМИ
 # ═══════════════════════════════════════════════════════════════════
 
-show_sa_help() {
+list_profiles() {
     clear
-    title "📝 КАК СОЗДАТЬ SERVICE ACCOUNT КЛЮЧ"
-    hr
-    echo
-    echo "1️⃣  Открой: ${GREEN}https://console.yandex.cloud/${NC}"
-    echo
-    echo "2️⃣  IAM → Service accounts → ${BOLD}Create${NC}"
-    echo "    Имя: ${GREEN}vps-watchdog-sa${NC}"
-    echo "    Роль: ${GREEN}compute.admin${NC}"
-    echo
-    echo "3️⃣  Keys → Create new key → Create authorized key"
-    echo "    Формат: ${GREEN}JSON${NC}"
-    echo
-    echo "4️⃣  Скачай ${GREEN}key.json${NC}"
-    echo
-    echo "5️⃣  Вернись в меню → пункт 1"
-    echo
-    pause
-}
-
-upload_sa_key() {
-    clear
-    title "📥 ЗАГРУЗКА SERVICE ACCOUNT КЛЮЧА"
-    hr
+    title "═══════════════════════════════════════════════════════════════"
+    title "                     📝 СПИСОК ПРОФИЛЕЙ                        "
+    title "═══════════════════════════════════════════════════════════════"
     echo
     
-    info "Открою редактор nano для вставки SA ключа"
-    echo
-    echo "Что делать:"
-    echo "  1. Открой файл key.json на компьютере"
-    echo "  2. Скопируй ВСЁ содержимое (Ctrl+A, Ctrl+C)"
-    echo "  3. Вернись сюда, вставь (правая кнопка мыши)"
-    echo "  4. Сохрани: Ctrl+O → Enter → Ctrl+X"
-    echo
-    
-    read -r -p "Нажми Enter когда готов..."
-    
-    mkdir -p "$CONFIG_DIR"
-    nano "$SA_KEY_FILE"
-    
-    if [[ -f "$SA_KEY_FILE" ]] && [[ -s "$SA_KEY_FILE" ]]; then
-        chmod 600 "$SA_KEY_FILE"
-        if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
-            success "SA ключ сохранён!"
-        else
-            error "JSON некорректный, проверь и попробуй снова"
-        fi
-    else
-        warn "Файл пустой"
-    fi
-    
-    pause
-}
-
-verify_sa_key() {
-    clear
-    title "🔍 ПРОВЕРКА SA КЛЮЧА"
-    hr
-    echo
-    
-    if [[ ! -f "$SA_KEY_FILE" ]]; then
-        error "SA ключ не найден!"
-        warn "Добавь через пункт 12"
+    if [[ ! -d "$PROFILES_DIR" ]] || [[ -z "$(ls -A "$PROFILES_DIR"/*.json 2>/dev/null)" ]]; then
+        warn "Нет профилей"
+        echo
+        info "Добавь профиль через пункт 2 (Добавить профиль)"
         pause
         return
     fi
     
-    success "Файл найден: $SA_KEY_FILE"
+    echo "┌────────────────────────────────────────────────────────────────┐"
+    echo "│                         ПРОФИЛИ VM                              │"
+    echo "└────────────────────────────────────────────────────────────────┘"
     echo
     
-    if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
-        success "JSON валидный"
+    local i=1
+    for file in "$PROFILES_DIR"/*.json; do
+        [[ -f "$file" ]] || continue
+        
+        local name=$(jq -r '.name' "$file")
+        local vm_host=$(jq -r '.vm_host' "$file")
+        local instance_id=$(jq -r '.instance_id' "$file")
+        local enabled=$(jq -r '.enabled' "$file")
+        local check_interval=$(jq -r '.check_interval' "$file")
+        
+        local status_icon="🔴"
+        local status_text="выключен"
+        if [[ "$enabled" == "true" ]]; then
+            status_icon="🟢"
+            status_text="${GREEN}включен${NC}"
+        fi
+        
+        echo -e "${BOLD}$i) $status_icon $name${NC}"
+        echo "   IP:       $vm_host"
+        echo "   ID:       ${instance_id:0:20}..."
+        echo -e "   Статус:   $status_text"
+        echo "   Интервал: ${check_interval}с"
         echo
         
-        if command -v jq >/dev/null 2>&1; then
-            info "Информация:"
-            echo "  ID: $(jq -r '.id // "N/A"' "$SA_KEY_FILE")"
-            echo "  SA ID: $(jq -r '.service_account_id // "N/A"' "$SA_KEY_FILE")"
-        fi
-        echo "  Размер: $(wc -c < "$SA_KEY_FILE") байт"
-        echo "  Права: $(stat -c %a "$SA_KEY_FILE")"
-        
-        if [[ "$(stat -c %a "$SA_KEY_FILE")" != "600" ]]; then
-            chmod 600 "$SA_KEY_FILE"
-            success "Права исправлены на 600"
-        fi
-    else
-        error "JSON некорректный!"
-    fi
+        ((i++))
+    done
     
+    hr
     pause
 }
-
-# ═══════════════════════════════════════════════════════════════════
-# ДОБАВЛЕНИЕ ПРОФИЛЯ
-# ═══════════════════════════════════════════════════════════════════
 
 add_profile() {
     clear
-    title "➕ ДОБАВЛЕНИЕ ПРОФИЛЯ VM"
-    hr
+    title "═══════════════════════════════════════════════════════════════"
+    title "                ➕ ДОБАВИТЬ ПРОФИЛЬ (OAuth)                    "
+    title "═══════════════════════════════════════════════════════════════"
     echo
     
-    if [[ ! -f "$SA_KEY_FILE" ]]; then
-        error "SA ключ не найден!"
-        warn "Сначала добавь SA ключ (пункт 12)"
+    # Проверка jq
+    if ! command -v jq >/dev/null 2>&1; then
+        warn "jq не установлен, устанавливаю..."
+        apt-get update -qq && apt-get install -y -qq jq || {
+            error "Не удалось установить jq"
+            pause
+            return
+        }
+    fi
+    
+    # Проверяем наличие сохранённого OAuth токена
+    oauth_token=""
+    if [[ -f "$CONFIG_DIR/oauth-token.txt" ]]; then
+        oauth_token=$(cat "$CONFIG_DIR/oauth-token.txt" 2>/dev/null | tr -d '\n\r ')
+        if [[ -n "$oauth_token" ]]; then
+            success "Найден сохранённый OAuth токен"
+            echo
+            read -r -p "Использовать сохранённый токен? (y/n): " use_saved
+            if [[ "$use_saved" =~ ^[Yy]$ ]]; then
+                info "Использую сохранённый OAuth токен"
+            else
+                oauth_token=""
+            fi
+        fi
+    fi
+    
+    # Если токена нет - запрашиваем новый
+    if [[ -z "$oauth_token" ]]; then
+        # OAuth авторизация
+        info "🌐 АВТОРИЗАЦИЯ ЧЕРЕЗ БРАУЗЕР"
+        hr
+        echo
+        echo "1️⃣  Открой эту ссылку в браузере:"
+        echo
+        echo -e "${GREEN}${BOLD}https://oauth.yandex.ru/authorize?response_type=token&client_id=1a6990aa636648e9b2ef855fa7bec2fb${NC}"
+        echo
+        echo "2️⃣  Авторизуйся в Yandex"
+        echo "3️⃣  Разреши доступ к Yandex Cloud"
+        echo "4️⃣  Скопируй токен"
+        echo
+        
+        read -r -p "Вставь OAuth токен: " oauth_token
+        
+        if [[ -z "$oauth_token" ]]; then
+            error "Токен пустой"
+            pause
+            return
+        fi
+        
+        success "OAuth токен получен"
+        
+        # Сохраняем OAuth токен для будущего использования
+        info "💾 Сохраняю OAuth токен..."
+        mkdir -p "$CONFIG_DIR"
+        echo "$oauth_token" > "$CONFIG_DIR/oauth-token.txt"
+        chmod 600 "$CONFIG_DIR/oauth-token.txt"
+        success "OAuth токен сохранён в $CONFIG_DIR/oauth-token.txt"
+    fi
+    
+    # Получаем IAM токен
+    info "🔄 Получаю IAM токен..."
+    
+    iam_response=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"yandexPassportOauthToken\": \"$oauth_token\"}" \
+        "https://iam.api.cloud.yandex.net/iam/v1/tokens")
+    
+    iam_token=$(echo "$iam_response" | jq -r '.iamToken // empty')
+    
+    if [[ -z "$iam_token" ]]; then
+        error "Не удалось получить IAM токен"
         pause
         return
     fi
     
-    info "Введи данные VM:"
+    success "IAM токен получен"
+    
+    # Функция для API запросов
+    yc_api() {
+        curl -s -X "$1" \
+            -H "Authorization: Bearer $iam_token" \
+            -H "Content-Type: application/json" \
+            "$2"
+    }
+    
+    # Получаем облака
+    echo
+    info "☁️  Получаю список облаков..."
+    
+    clouds=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds")
+    cloud_count=$(echo "$clouds" | jq '.clouds // [] | length')
+    
+    if [[ "$cloud_count" -eq 0 ]]; then
+        error "Облака не найдены"
+        pause
+        return
+    fi
+    
+    success "Найдено облаков: $cloud_count"
+    
+    # Если облако одно - выбираем автоматически
+    if [[ "$cloud_count" -eq 1 ]]; then
+        cloud_id=$(echo "$clouds" | jq -r '.clouds[0].id')
+        success "Выбрано облако: $cloud_id"
+    else
+        echo
+        echo "┌────────────────────────────────────────────────────────────┐"
+        echo "│                    ДОСТУПНЫЕ ОБЛАКА                         │"
+        echo "└────────────────────────────────────────────────────────────┘"
+        echo
+        
+        local i=1
+        declare -A cloud_map
+        while IFS= read -r cloud; do
+            local name=$(echo "$cloud" | jq -r '.name')
+            local id=$(echo "$cloud" | jq -r '.id')
+            
+            cloud_map[$i]="$id"
+            
+            echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+            echo "   ID: $id"
+            echo
+            
+            ((i++))
+        done < <(echo "$clouds" | jq -c '.clouds[]')
+        
+        read -r -p "Выбери номер облака: " cloud_choice
+        
+        if [[ ! "$cloud_choice" =~ ^[0-9]+$ ]] || [[ -z "${cloud_map[$cloud_choice]:-}" ]]; then
+            error "Неверный выбор"
+            pause
+            return
+        fi
+        
+        cloud_id="${cloud_map[$cloud_choice]}"
+    fi
+    
+    # Получаем папки
+    echo
+    info "📁 Получаю список папок..."
+    
+    folders=$(yc_api GET "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders?cloudId=$cloud_id")
+    folder_count=$(echo "$folders" | jq '.folders // [] | length')
+    
+    if [[ "$folder_count" -eq 0 ]]; then
+        error "Папки не найдены"
+        pause
+        return
+    fi
+    
+    success "Найдено папок: $folder_count"
+    
+    # Показываем папки
+    echo
+    echo "┌────────────────────────────────────────────────────────────┐"
+    echo "│                    ДОСТУПНЫЕ ПАПКИ                          │"
+    echo "└────────────────────────────────────────────────────────────┘"
     echo
     
-    read -r -p "Имя VM: " vm_name
-    [[ -z "$vm_name" ]] && { error "Имя пустое"; pause; return; }
+    local i=1
+    declare -A folder_map
+    while IFS= read -r folder; do
+        local name=$(echo "$folder" | jq -r '.name')
+        local id=$(echo "$folder" | jq -r '.id')
+        
+        folder_map[$i]="$id"
+        
+        echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+        echo "   ID: $id"
+        echo
+        
+        ((i++))
+    done < <(echo "$folders" | jq -c '.folders[]')
     
-    read -r -p "IP адрес: " vm_host
-    [[ -z "$vm_host" ]] && { error "IP пустой"; pause; return; }
+    read -r -p "Выбери номер папки: " folder_choice
     
-    read -r -p "Instance ID: " instance_id
-    [[ -z "$instance_id" ]] && { error "ID пустой"; pause; return; }
+    if [[ ! "$folder_choice" =~ ^[0-9]+$ ]] || [[ -z "${folder_map[$folder_choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
     
-    read -r -p "Folder ID: " folder_id
-    [[ -z "$folder_id" ]] && { error "Folder ID пустой"; pause; return; }
+    folder_id="${folder_map[$folder_choice]}"
+    success "Выбрана папка: $folder_id"
     
+    # Получаем VM
     echo
+    info "🖥️  Получаю список VM..."
+    
+    vms=$(yc_api GET "https://compute.api.cloud.yandex.net/compute/v1/instances?folderId=$folder_id")
+    vm_count=$(echo "$vms" | jq '.instances // [] | length')
+    
+    if [[ "$vm_count" -eq 0 ]]; then
+        warn "VM не найдены в этой папке"
+        pause
+        return
+    fi
+    
+    success "Найдено VM: $vm_count"
+    
+    # Показываем VM
+    echo
+    echo "┌────────────────────────────────────────────────────────────┐"
+    echo "│                 ДОСТУПНЫЕ ВИРТУАЛЬНЫЕ МАШИНЫ                │"
+    echo "└────────────────────────────────────────────────────────────┘"
+    echo
+    
+    local i=1
+    declare -A vm_map
+    while IFS= read -r vm; do
+        local name=$(echo "$vm" | jq -r '.name')
+        local id=$(echo "$vm" | jq -r '.id')
+        local status=$(echo "$vm" | jq -r '.status')
+        local ip=$(echo "$vm" | jq -r '.networkInterfaces[0].primaryV4Address.oneToOneNat.address // "нет IP"')
+        
+        vm_map[$i]="$id|$ip|$name"
+        
+        echo -e "${BOLD}$i)${NC} ${CYAN}$name${NC}"
+        echo "   ID:     $id"
+        echo "   IP:     $ip"
+        echo "   Статус: $status"
+        echo
+        
+        ((i++))
+    done < <(echo "$vms" | jq -c '.instances[]')
+    
+    read -r -p "Выбери номер VM для мониторинга: " vm_choice
+    
+    if [[ ! "$vm_choice" =~ ^[0-9]+$ ]] || [[ -z "${vm_map[$vm_choice]:-}" ]]; then
+        error "Неверный выбор"
+        pause
+        return
+    fi
+    
+    IFS='|' read -r instance_id vm_host vm_name <<< "${vm_map[$vm_choice]}"
+    
+    # Проверяем что все переменные получены
+    if [[ -z "$instance_id" ]] || [[ -z "$vm_host" ]] || [[ -z "$vm_name" ]]; then
+        error "Ошибка получения данных VM"
+        echo "Instance ID: '$instance_id'"
+        echo "VM Host: '$vm_host'"
+        echo "VM Name: '$vm_name'"
+        pause
+        return
+    fi
+    
+    success "Выбрана VM:"
+    echo "   Имя:         $vm_name"
+    echo "   Instance ID: $instance_id"
+    echo "   VM Host:     $vm_host"
+    echo "   Folder ID:   $folder_id"
+    echo
+    
+    # Создаём профиль
     info "💾 Создаю профиль..."
     
+    # Создаём директорию если нет
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        mkdir -p "$PROFILES_DIR"
+        echo "Создана директория: $PROFILES_DIR"
+    fi
+    
+    # Генерируем уникальный ID
     profile_id=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
     profile_file="$PROFILES_DIR/${profile_id}.json"
     
-    mkdir -p "$PROFILES_DIR"
+    echo "Файл профиля: $profile_file"
     
-    cat > "$profile_file" <<PROFEOF
+    # Создаём временный файл
+    temp_file=$(mktemp)
+    
+    # Записываем JSON
+    cat > "$temp_file" <<PROFILE_JSON
 {
   "id": "${profile_id}",
   "name": "${vm_name}",
@@ -554,42 +682,51 @@ add_profile() {
   "created_at": "$(date -Iseconds)",
   "updated_at": "$(date -Iseconds)"
 }
-PROFEOF
+PROFILE_JSON
     
-    if [[ -f "$profile_file" ]]; then
-        success "Профиль создан!"
-        echo
-        python3 -m json.tool "$profile_file" 2>/dev/null || cat "$profile_file"
-        echo
-        
-        info "🔄 Перезапускаю сервис..."
-        systemctl restart "$SERVICE" &>/dev/null &
-        success "Готово!"
+    # Проверяем что файл создан
+    if [[ ! -f "$temp_file" ]]; then
+        error "Не удалось создать временный файл"
+        pause
+        return
     fi
     
-    pause
-}
-
-show_help() {
-    clear
-    title "❓ ПОМОЩЬ"
-    hr
+    # Проверяем JSON
+    if ! jq empty "$temp_file" 2>/dev/null; then
+        error "Невалидный JSON"
+        cat "$temp_file"
+        rm -f "$temp_file"
+        pause
+        return
+    fi
+    
+    # Копируем в финальное место
+    cp "$temp_file" "$profile_file"
+    rm -f "$temp_file"
+    
+    # Проверяем что профиль создан
+    if [[ ! -f "$profile_file" ]]; then
+        error "Не удалось создать профиль: $profile_file"
+        pause
+        return
+    fi
+    
+    success "Профиль создан: $profile_file"
+    
+    # Показываем содержимое
     echo
-    info "VPS Watchdog автоматически мониторит и перезапускает VM"
+    info "Содержимое профиля:"
+    cat "$profile_file" | jq .
     echo
-    echo "Порядок настройки:"
-    echo "  1. Добавь SA ключ (пункт 12)"
-    echo "  2. Создай профиль VM (пункт 2)"
-    echo "  3. Настрой Telegram бота (опционально, пункт 6)"
+    
+    # Перезапускаем сервис в фоне
+    info "🔄 Перезапускаю сервис..."
+    systemctl restart "$SERVICE" &>/dev/null &
+    
+    success "Готово! Профиль добавлен!"
+    info "Проверь логи: sudo docker logs -f vps-watchdog"
     echo
-    echo "Логи:"
-    echo "  docker logs -f vps-watchdog"
-    echo
-    echo "Документация:"
-    echo "  https://github.com/Mastachok/ya-vps-autostart"
-    echo
-    pause
-}
+    info "Проверь логи: sudo docker logs -f vps-watchdog"
     
     pause
 }
@@ -1058,7 +1195,7 @@ manage_oauth() {
         warn "OAuth токен не найден"
         echo
         info "Токен будет создан автоматически при добавлении первого профиля"
-        echo "   через пункт меню: 2) ➕ Добавить профиль (OAuth)"
+        echo "   через пункт меню: 2) ➕ Добавить профиль"
         echo
         hr
         echo
@@ -1302,6 +1439,132 @@ upload_sa_key() {
     pause
 }
 
+verify_sa_key() {
+    clear
+    title "🔍 ПРОВЕРКА SA КЛЮЧА"
+    hr
+    echo
+    
+    if [[ ! -f "$SA_KEY_FILE" ]]; then
+        error "SA ключ не найден: $SA_KEY_FILE"
+        echo
+        warn "Добавь через пункт 12"
+        pause
+        return
+    fi
+    
+    success "Файл найден: $SA_KEY_FILE"
+    echo
+    
+    if python3 -m json.tool "$SA_KEY_FILE" >/dev/null 2>&1; then
+        success "JSON валидный"
+        echo
+        
+        if command -v jq >/dev/null 2>&1; then
+            info "Информация:"
+            echo "  ID: $(jq -r '.id // "N/A"' "$SA_KEY_FILE")"
+            echo "  SA ID: $(jq -r '.service_account_id // "N/A"' "$SA_KEY_FILE")"
+        fi
+        echo "  Размер: $(wc -c < "$SA_KEY_FILE") байт"
+        echo "  Права: $(stat -c %a "$SA_KEY_FILE")"
+        
+        if [[ "$(stat -c %a "$SA_KEY_FILE")" != "600" ]]; then
+            chmod 600 "$SA_KEY_FILE"
+            success "Права исправлены на 600"
+        fi
+    else
+        error "JSON некорректный!"
+    fi
+    
+    pause
+}
+
+add_profile() {
+    clear
+    title "➕ ДОБАВЛЕНИЕ ПРОФИЛЯ VM"
+    hr
+    echo
+    
+    if [[ ! -f "$SA_KEY_FILE" ]]; then
+        error "SA ключ не найден!"
+        warn "Сначала добавь SA ключ (пункт 12)"
+        pause
+        return
+    fi
+    
+    info "Введи данные VM:"
+    echo
+    
+    read -r -p "Имя VM: " vm_name
+    if [[ -z "$vm_name" ]]; then
+        error "Имя не может быть пустым"
+        pause
+        return
+    fi
+    
+    read -r -p "IP адрес: " vm_host
+    if [[ -z "$vm_host" ]]; then
+        error "IP не может быть пустым"
+        pause
+        return
+    fi
+    
+    read -r -p "Instance ID: " instance_id
+    if [[ -z "$instance_id" ]]; then
+        error "Instance ID не может быть пустым"
+        pause
+        return
+    fi
+    
+    read -r -p "Folder ID: " folder_id
+    if [[ -z "$folder_id" ]]; then
+        error "Folder ID не может быть пустым"
+        pause
+        return
+    fi
+    
+    echo
+    info "💾 Создаю профиль..."
+    
+    profile_id=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
+    profile_file="$PROFILES_DIR/${profile_id}.json"
+    
+    mkdir -p "$PROFILES_DIR"
+    
+    cat > "$profile_file" <<PROFEOF2
+{
+  "id": "${profile_id}",
+  "name": "${vm_name}",
+  "vm_host": "${vm_host}",
+  "instance_id": "${instance_id}",
+  "folder_id": "${folder_id}",
+  "enabled": true,
+  "check_interval": 60,
+  "ping_count": 3,
+  "ping_timeout": 5,
+  "cooldown_minutes": 5,
+  "max_start_attempts": 3,
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)"
+}
+PROFEOF2
+    
+    if [[ -f "$profile_file" ]]; then
+        success "Профиль создан!"
+        echo
+        python3 -m json.tool "$profile_file" 2>/dev/null || cat "$profile_file"
+        echo
+        
+        info "🔄 Перезапускаю сервис..."
+        systemctl restart "$SERVICE" &>/dev/null &
+        success "Готово!"
+    fi
+    
+    pause
+}
+
+
+
 check_sa_key() {
     clear
     title "═══════════════════════════════════════════════════════════════"
@@ -1424,7 +1687,4 @@ fi
 mkdir -p "$CONFIG_DIR" "$PROFILES_DIR" "$DATA_DIR"
 
 # Запускаем меню
-main_menu
--e 
-# Запуск
 main_menu
