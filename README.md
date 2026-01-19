@@ -487,13 +487,6 @@ python -m pytest tests/
 pylint app/*.py
 ```
 
----
-
-## 📄 Лицензия
-
-MIT License - см. [LICENSE](LICENSE)
-
----
 
 ## 🙏 Благодарности
 
