@@ -11,6 +11,7 @@ import subprocess
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 # Добавляем путь для импорта модулей
 sys.path.insert(0, '/opt/vps-watchdog/app')
