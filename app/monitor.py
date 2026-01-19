@@ -33,7 +33,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler('/opt/vps-watchdog/logs/watchdog.log'),
+        logging.FileHandler('/app/logs/watchdog.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
