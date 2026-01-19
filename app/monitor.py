@@ -1,7 +1,7 @@
 """
 VPS Watchdog v3.0 - Multi-threaded VM Monitor
-Многопоточный мониторинг множества VM с Telegram уведомлениями
 Использует Service Account ключ
+ИСПРАВЛЕНО: Правильная обработка числовых статусов VM
 """
 
 import os
@@ -15,22 +15,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-# Добавляем путь для импорта модулей
 sys.path.insert(0, '/opt/vps-watchdog/app')
 
 from vm_manager import VMProfileManager, VMProfile
 from telegram_bot import TelegramBot
 
-# Yandex Cloud SDK
 try:
     import yandexcloud
     from yandex.cloud.compute.v1.instance_service_pb2 import StartInstanceRequest, GetInstanceRequest
     from yandex.cloud.compute.v1.instance_service_pb2_grpc import InstanceServiceStub
+    from yandex.cloud.compute.v1.instance_pb2 import Instance
 except ImportError:
     print("ERROR: yandexcloud library not installed")
     sys.exit(1)
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -40,6 +38,27 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Маппинг статусов VM (число -> строка)
+VM_STATUS_MAP = {
+    0: "STATUS_UNSPECIFIED",
+    1: "PROVISIONING",
+    2: "RUNNING",
+    3: "STOPPING",
+    4: "STOPPED",
+    5: "STARTING",
+    6: "RESTARTING",
+    7: "UPDATING",
+    8: "ERROR",
+    9: "CRASHED",
+    10: "DELETING"
+}
+
+def get_status_name(status) -> str:
+    """Конвертирует числовой статус в строку"""
+    if isinstance(status, int):
+        return VM_STATUS_MAP.get(status, f"UNKNOWN({status})")
+    return str(status)
 
 
 class VMMonitor:
@@ -96,7 +115,8 @@ class VMMonitor:
             instance_service = self.sdk.client(InstanceServiceStub)
             request = GetInstanceRequest(instance_id=self.profile.instance_id)
             instance = instance_service.Get(request)
-            return instance.status
+            # Конвертируем числовой статус в строку
+            return get_status_name(instance.status)
         except Exception as e:
             logger.error(f"[{self.profile.name}] Ошибка получения статуса: {e}")
             return None
@@ -152,25 +172,6 @@ class VMMonitor:
                     f"💬 {error_msg[:500]}"
                 )
             return False
-    
-    def is_in_cooldown(self) -> bool:
-        """Проверка cooldown периода"""
-        if not self.last_cooldown:
-            return False
-        cooldown_end = self.last_cooldown + timedelta(minutes=self.profile.cooldown_minutes)
-        return datetime.now() < cooldown_end
-    
-    def monitor_loop(self):
-        """Основной цикл мониторинга"""
-        logger.info(f"[{self.profile.name}] Запуск мониторинга")
-        logger.info(f"[{self.profile.name}] VM: {self.profile.vm_host}")
-        logger.info(f"[{self.profile.name}] Instance ID: {self.profile.instance_id}")
-        logger.info(f"[{self.profile.name}] Интервал проверки: {self.profile.check_interval}с")
-        
-        while self.running:
-            try:
-                self.last_check = datetime.now()
-                
                 # Пингуем VM
                 is_up = self.ping_vm()
                 
