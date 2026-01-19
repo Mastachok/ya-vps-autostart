@@ -106,6 +106,14 @@ get_telegram_status() {
     fi
 }
 
+get_sa_status() {
+    if [[ -f "$CONFIG_DIR/sa-key.json" ]] && jq . "$CONFIG_DIR/sa-key.json" >/dev/null 2>&1; then
+        echo -e "${GREEN}настроен${NC}"
+    else
+        echo -e "${RED}отсутствует${NC}"
+    fi
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # ГЛАВНОЕ МЕНЮ
 # ═══════════════════════════════════════════════════════════════════
@@ -128,6 +136,7 @@ main_menu() {
         echo -e "   📝 Профилей: ${BOLD}$total${NC} (активных: ${GREEN}$enabled${NC})"
         echo -e "   ⚙️  Сервис: $(get_service_status)"
         echo -e "   📱 Telegram: $(get_telegram_status)"
+        echo -e "   🔑 SA ключ: $(get_sa_status)"
         
         hr
         echo
@@ -143,13 +152,15 @@ main_menu() {
         echo "  7) 📤 Тест уведомления"
         echo "  8) 📊 Статус бота"
         echo
-        echo -e "${BOLD}🔐 OAUTH:${NC}"
-        echo "  12) 🔑 Управление OAuth токеном"
-        echo
         echo -e "${BOLD}⚙️  СИСТЕМА:${NC}"
         echo "  9) 🔧 Управление сервисом"
         echo "  10) 📜 Показать логи"
         echo "  11) 📈 Статистика"
+        echo
+        echo -e "${BOLD}🔐 АВТОРИЗАЦИЯ:${NC}"
+        echo "  12) 🔑 Управление OAuth токеном"
+        echo "  13) 📤 Загрузить SA ключ"
+        echo "  14) 🔍 Проверить SA ключ"
         echo
         echo -e "${BOLD}ℹ️  ИНФОРМАЦИЯ:${NC}"
         echo "  0) ❓ Помощь"
@@ -171,6 +182,8 @@ main_menu() {
             10) show_logs ;;
             11) show_stats ;;
             12) manage_oauth ;;
+            13) upload_sa_key ;;
+            14) check_sa_key ;;
             0) show_help ;;
             q|Q) exit 0 ;;
             *) warn "Неверный выбор"; pause ;;
@@ -1145,6 +1158,217 @@ show_logs() {
         echo
         docker logs --tail 50 "$container_name" 2>&1
     fi
+    
+    pause
+}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SERVICE ACCOUNT FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════
+
+upload_sa_key() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "           📤 ЗАГРУЗКА SERVICE ACCOUNT КЛЮЧА"
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    # Проверка существующего ключа
+    if [[ -f "$CONFIG_DIR/sa-key.json" ]]; then
+        warn "⚠️  SA ключ уже существует!"
+        echo
+        info "Текущий SA ID:"
+        cat "$CONFIG_DIR/sa-key.json" | jq -r '.service_account_id' 2>/dev/null || echo "Невозможно прочитать"
+        echo
+        echo "Хочешь заменить существующий ключ? (yes/no)"
+        read -r confirm
+        [[ "$confirm" != "yes" ]] && return
+    fi
+    
+    echo
+    info "📚 Как получить Service Account ключ:"
+    echo
+    echo "1️⃣  Открой Yandex Cloud Console:"
+    echo "    ${CYAN}https://console.cloud.yandex.ru/${NC}"
+    echo
+    echo "2️⃣  Перейди: ${BOLD}Сервисные аккаунты → Создать${NC} (если нет)"
+    echo
+    echo "3️⃣  ${RED}ВАЖНО!${NC} Назначь роль: ${GREEN}compute.operator${NC}"
+    echo
+    echo "4️⃣  Открой SA → Ключи → Создать авторизованный ключ"
+    echo
+    echo "5️⃣  Скачай JSON файл"
+    echo
+    
+    pause
+    clear
+    
+    title "═══════════════════════════════════════════════════════════════"
+    title "           📋 ВСТАВКА КЛЮЧА"
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    info "Сейчас откроется редактор nano."
+    info "Вставь ВЕСЬ текст из скачанного JSON файла."
+    echo
+    warn "ВАЖНО:"
+    echo "  • Вставляй весь JSON целиком (от { до })"
+    echo "  • Не добавляй пробелы в начале/конце"
+    echo "  • Сохрани: Ctrl+X, затем Y, затем Enter"
+    echo
+    
+    pause
+    
+    # Создаём временный файл
+    tmp_file=$(mktemp)
+    
+    # Открываем nano
+    nano "$tmp_file"
+    
+    # Проверка что файл не пустой
+    if [[ ! -s "$tmp_file" ]]; then
+        error "❌ Файл пустой! Ключ не загружен."
+        rm -f "$tmp_file"
+        pause
+        return
+    fi
+    
+    # Проверка валидности JSON
+    if ! jq . "$tmp_file" >/dev/null 2>&1; then
+        error "❌ Невалидный JSON!"
+        echo
+        warn "Проверь что скопировал весь текст из файла."
+        warn "JSON должен начинаться с { и заканчиваться на }"
+        rm -f "$tmp_file"
+        pause
+        return
+    fi
+    
+    # Проверка что это SA ключ
+    if ! jq -e '.service_account_id' "$tmp_file" >/dev/null 2>&1; then
+        error "❌ Это не Service Account ключ!"
+        echo
+        warn "В файле должно быть поле 'service_account_id'"
+        rm -f "$tmp_file"
+        pause
+        return
+    fi
+    
+    # Создаём директорию если нет
+    mkdir -p "$CONFIG_DIR"
+    
+    # Сохраняем ключ
+    mv "$tmp_file" "$CONFIG_DIR/sa-key.json"
+    chmod 600 "$CONFIG_DIR/sa-key.json"
+    
+    echo
+    success "✅ SA ключ успешно загружен!"
+    echo
+    
+    # Показываем информацию
+    info "📋 Информация о ключе:"
+    echo
+    echo "  Service Account ID:"
+    echo "    $(cat "$CONFIG_DIR/sa-key.json" | jq -r '.service_account_id')"
+    echo
+    echo "  Key ID:"
+    echo "    $(cat "$CONFIG_DIR/sa-key.json" | jq -r '.id')"
+    echo
+    
+    # Перезапуск сервиса
+    if systemctl is-active --quiet "$SERVICE"; then
+        echo
+        info "🔄 Перезапускаю сервис..."
+        systemctl restart "$SERVICE"
+        sleep 2
+        
+        if systemctl is-active --quiet "$SERVICE"; then
+            success "Сервис перезапущен!"
+        else
+            error "Ошибка перезапуска. Проверь логи: sudo docker logs vps-watchdog"
+        fi
+    fi
+    
+    echo
+    success "Готово! SA ключ настроен."
+    echo
+    info "Теперь VPS Watchdog сможет запускать VM!"
+    
+    pause
+}
+
+check_sa_key() {
+    clear
+    title "═══════════════════════════════════════════════════════════════"
+    title "           🔍 ПРОВЕРКА SERVICE ACCOUNT КЛЮЧА"
+    title "═══════════════════════════════════════════════════════════════"
+    echo
+    
+    if [[ ! -f "$CONFIG_DIR/sa-key.json" ]]; then
+        error "❌ SA ключ НЕ НАЙДЕН!"
+        echo
+        warn "Без SA ключа VPS Watchdog НЕ СМОЖЕТ запускать VM!"
+        echo
+        info "Загрузи SA ключ через главное меню (пункт: Загрузить SA ключ)"
+        echo
+        info "Или через команду:"
+        echo "  sudo nano /opt/vps-watchdog/config/sa-key.json"
+        echo
+        info "📚 Подробная инструкция:"
+        echo "  https://github.com/Mastachok/ya-vps-autostart/blob/main/docs/SERVICE_ACCOUNT_SETUP.md"
+        pause
+        return
+    fi
+    
+    # Проверка валидности
+    if ! jq . "$CONFIG_DIR/sa-key.json" >/dev/null 2>&1; then
+        error "❌ SA ключ НЕВАЛИДЕН!"
+        echo
+        warn "Файл существует но содержит ошибки."
+        warn "Загрузи ключ заново."
+        pause
+        return
+    fi
+    
+    success "✅ SA ключ найден и валиден"
+    echo
+    
+    # Информация о ключе
+    info "📋 Информация о Service Account:"
+    echo
+    
+    sa_id=$(cat "$CONFIG_DIR/sa-key.json" | jq -r '.service_account_id')
+    key_id=$(cat "$CONFIG_DIR/sa-key.json" | jq -r '.id')
+    
+    echo "  Service Account ID:"
+    echo "    $sa_id"
+    echo
+    echo "  Key ID:"
+    echo "    $key_id"
+    echo
+    
+    # Проверка прав
+    perms=$(stat -c "%a" "$CONFIG_DIR/sa-key.json")
+    if [[ "$perms" != "600" ]]; then
+        warn "⚠️  Права на файл: $perms (должно быть 600)"
+        echo
+        info "Исправляю права..."
+        chmod 600 "$CONFIG_DIR/sa-key.json"
+        success "Права исправлены!"
+        echo
+    else
+        success "Права на файл: OK (600)"
+    fi
+    
+    # Проверка в логах
+    echo
+    info "📜 Последние упоминания SA в логах:"
+    echo
+    docker logs vps-watchdog 2>&1 | grep -i "service.*account\|authorized\|iam" | tail -5 || echo "  Логи пока пусты"
+    
+    echo
+    success "Проверка завершена!"
     
     pause
 }
