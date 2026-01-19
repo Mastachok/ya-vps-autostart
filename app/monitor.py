@@ -1,16 +1,16 @@
 """
-VPS Watchdog v3.0 - Multi-threaded VM Monitor with OAuth support
+VPS Watchdog v3.0 - Multi-threaded VM Monitor
 Многопоточный мониторинг множества VM с Telegram уведомлениями
-Использует OAuth токены из профилей вместо Service Account
+Использует Service Account ключ
 """
 
 import os
 import sys
 import time
+import json
 import logging
 import subprocess
 import threading
-import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -45,9 +45,9 @@ logger = logging.getLogger(__name__)
 class VMMonitor:
     """Монитор для одной VM"""
     
-    def __init__(self, profile: VMProfile, oauth_token: Optional[str], telegram: TelegramBot):
+    def __init__(self, profile: VMProfile, sa_key: dict, telegram: TelegramBot):
         self.profile = profile
-        self.oauth_token = oauth_token
+        self.sa_key = sa_key
         self.telegram = telegram
         self.running = False
         self.thread = None
@@ -62,62 +62,13 @@ class VMMonitor:
         
         # Yandex Cloud SDK
         self.sdk = None
-        self.iam_token = None
         self._init_sdk()
         
-    def _get_iam_token(self) -> Optional[str]:
-        """Получить IAM токен из OAuth токена с кэшированием"""
-        if not self.oauth_token:
-            return None
-        
-        # Проверяем валидность текущего IAM токена (если есть)
-        # IAM токены живут 12 часов, поэтому обновляем если прошло больше 11 часов
-        if self.iam_token:
-            # В продакшене здесь должна быть проверка времени создания токена
-            # Для упрощения просто возвращаем существующий
-            return self.iam_token
-            
-        try:
-            response = requests.post(
-                'https://iam.api.cloud.yandex.net/iam/v1/tokens',
-                json={'yandexPassportOauthToken': self.oauth_token},
-                timeout=10
-            )
-            if response.status_code == 200:
-                data = response.json()
-                self.iam_token = data.get('iamToken')
-                logger.info(f"[{self.profile.name}] IAM токен получен")
-                return self.iam_token
-            else:
-                logger.error(f"[{self.profile.name}] Ошибка получения IAM: {response.text}")
-                return None
-        except Exception as e:
-            logger.error(f"[{self.profile.name}] Ошибка запроса IAM: {e}")
-            return None
-    
-    def _refresh_iam_token(self) -> bool:
-        """Принудительное обновление IAM токена"""
-        self.iam_token = None  # Сбрасываем текущий
-        new_token = self._get_iam_token()
-        if new_token:
-            # Пересоздаём SDK с новым токеном
-            self._init_sdk()
-            return True
-        return False
-    
     def _init_sdk(self):
-        """Инициализация Yandex Cloud SDK с OAuth"""
+        """Инициализация Yandex Cloud SDK"""
         try:
-            # Получаем IAM токен из OAuth
-            iam_token = self._get_iam_token()
-            if not iam_token:
-                logger.warning(f"[{self.profile.name}] Не удалось получить IAM токен, SDK не инициализирован")
-                self.sdk = None
-                return
-            
-            # Инициализируем SDK с IAM токеном
-            self.sdk = yandexcloud.SDK(iam_token=iam_token)
-            logger.info(f"[{self.profile.name}] SDK инициализирован через OAuth")
+            self.sdk = yandexcloud.SDK(service_account_key=self.sa_key)
+            logger.info(f"[{self.profile.name}] SDK инициализирован")
         except Exception as e:
             logger.error(f"[{self.profile.name}] Ошибка инициализации SDK: {e}")
             self.sdk = None
@@ -195,18 +146,6 @@ class VMMonitor:
             error_msg = str(e)
             logger.error(f"[{self.profile.name}] Ошибка запуска: {error_msg}")
             
-            # Проверяем, не истёк ли IAM токен
-            if 'UNAUTHENTICATED' in error_msg or 'Unauthorized' in error_msg:
-                logger.warning(f"[{self.profile.name}] IAM токен истёк, обновляю...")
-                if self._refresh_iam_token():
-                    logger.info(f"[{self.profile.name}] IAM токен обновлён, повторяю попытку...")
-                    # Рекурсивно повторяем попытку один раз
-                    try:
-                        return self.start_vm()
-                    except:
-                        pass
-            
-            # Отправляем уведомление в Telegram
             if self.telegram:
                 self.telegram.send_message(
                     f"❌ Ошибка запуска VM {self.profile.name}\n"
@@ -327,39 +266,34 @@ class MultiVMWatchdog:
         self.monitors = {}
         self.running = False
         
-        logger.info("═" * 80)
-        logger.info("🛡️  VPS WATCHDOG v3.0 - Multi-VM Monitor (OAuth)")
-        logger.info("═" * 80)
-    
-    def _get_oauth_token_for_folder(self, folder_id: str) -> Optional[str]:
-        """Получить OAuth токен для конкретной папки из окружения"""
-        # Можно передать токен через переменную окружения
-        oauth_token = os.getenv('YANDEX_OAUTH_TOKEN')
-        if oauth_token:
-            logger.info(f"Используется OAuth токен из переменной окружения")
-            return oauth_token
+        # Загружаем SA ключ
+        self.sa_key_file = os.getenv('SA_KEY_FILE', '/app/config/sa-key.json')
+        if not Path(self.sa_key_file).exists():
+            logger.error(f"❌ SA ключ не найден: {self.sa_key_file}")
+            logger.error(f"📝 Создай SA ключ в Yandex Cloud Console:")
+            logger.error(f"   1. IAM → Service accounts → Create")
+            logger.error(f"   2. Роли: compute.admin")
+            logger.error(f"   3. Create key → JSON")
+            logger.error(f"   4. Сохрани как {self.sa_key_file}")
+            sys.exit(1)
         
-        # Или читаем из файла конфигурации
-        oauth_file = os.getenv('OAUTH_TOKEN_FILE', '/app/config/oauth-token.txt')
-        if Path(oauth_file).exists():
-            try:
-                with open(oauth_file, 'r') as f:
-                    token = f.read().strip()
-                    logger.info(f"OAuth токен загружен из {oauth_file}")
-                    return token
-            except Exception as e:
-                logger.error(f"Ошибка чтения OAuth токена: {e}")
+        # Читаем SA ключ
+        try:
+            with open(self.sa_key_file, 'r') as f:
+                self.sa_key = json.load(f)
+            logger.info(f"✅ SA ключ загружен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка чтения SA ключа: {e}")
+            sys.exit(1)
         
-        logger.warning("OAuth токен не найден. Мониторинг будет работать только с ping")
-        return None
+        logger.info("═" * 80)
+        logger.info("🛡️  VPS WATCHDOG v3.0 - Multi-VM Monitor")
+        logger.info("═" * 80)
     
     def load_profiles(self):
         """Загрузить и запустить мониторинг для всех включенных профилей"""
         profiles = self.profile_manager.get_enabled_profiles()
         logger.info(f"📊 Найдено активных профилей: {len(profiles)}")
-        
-        # Получаем OAuth токен (один для всех профилей)
-        oauth_token = self._get_oauth_token_for_folder(None)
         
         for profile in profiles:
             if profile.id not in self.monitors:
@@ -368,7 +302,7 @@ class MultiVMWatchdog:
                 logger.info(f"   VM Host: {profile.vm_host}")
                 logger.info(f"   Folder ID: {profile.folder_id}")
                 
-                monitor = VMMonitor(profile, oauth_token, self.telegram)
+                monitor = VMMonitor(profile, self.sa_key, self.telegram)
                 self.monitors[profile.id] = monitor
                 monitor.start()
     
@@ -376,7 +310,6 @@ class MultiVMWatchdog:
         """Перезагрузить профили (добавить новые, удалить отключенные)"""
         profiles = self.profile_manager.get_enabled_profiles()
         active_ids = {p.id for p in profiles}
-        oauth_token = self._get_oauth_token_for_folder(None)
         
         # Останавливаем удалённые/отключенные
         for monitor_id in list(self.monitors.keys()):
@@ -389,7 +322,7 @@ class MultiVMWatchdog:
         for profile in profiles:
             if profile.id not in self.monitors:
                 logger.info(f"➕ Добавляю профиль: {profile.name}")
-                monitor = VMMonitor(profile, oauth_token, self.telegram)
+                monitor = VMMonitor(profile, self.sa_key, self.telegram)
                 self.monitors[profile.id] = monitor
                 monitor.start()
     
