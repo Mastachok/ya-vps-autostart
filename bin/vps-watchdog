@@ -431,28 +431,49 @@ add_profile_oauth() {
     
     IFS='|' read -r instance_id vm_host vm_name <<< "${vm_map[$vm_choice]}"
     
+    # Проверяем что все переменные получены
+    if [[ -z "$instance_id" ]] || [[ -z "$vm_host" ]] || [[ -z "$vm_name" ]]; then
+        error "Ошибка получения данных VM"
+        echo "Instance ID: '$instance_id'"
+        echo "VM Host: '$vm_host'"
+        echo "VM Name: '$vm_name'"
+        pause
+        return
+    fi
+    
     success "Выбрана VM:"
     echo "   Имя:         $vm_name"
     echo "   Instance ID: $instance_id"
     echo "   VM Host:     $vm_host"
+    echo "   Folder ID:   $folder_id"
     echo
     
     # Создаём профиль
     info "💾 Создаю профиль..."
     
-    mkdir -p "$PROFILES_DIR"
+    # Создаём директорию если нет
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        mkdir -p "$PROFILES_DIR"
+        echo "Создана директория: $PROFILES_DIR"
+    fi
     
     # Генерируем уникальный ID
-    profile_id=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 8 | head -n 1)
+    profile_id=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
     profile_file="$PROFILES_DIR/${profile_id}.json"
     
-    cat > "$profile_file" <<EOF
+    echo "Файл профиля: $profile_file"
+    
+    # Создаём временный файл
+    temp_file=$(mktemp)
+    
+    # Записываем JSON
+    cat > "$temp_file" <<PROFILE_JSON
 {
-  "id": "$profile_id",
-  "name": "$vm_name",
-  "vm_host": "$vm_host",
-  "instance_id": "$instance_id",
-  "folder_id": "$folder_id",
+  "id": "${profile_id}",
+  "name": "${vm_name}",
+  "vm_host": "${vm_host}",
+  "instance_id": "${instance_id}",
+  "folder_id": "${folder_id}",
   "enabled": true,
   "check_interval": 60,
   "ping_count": 3,
@@ -462,14 +483,48 @@ add_profile_oauth() {
   "created_at": "$(date -Iseconds)",
   "updated_at": "$(date -Iseconds)"
 }
-EOF
+PROFILE_JSON
     
-    success "Профиль создан!"
+    # Проверяем что файл создан
+    if [[ ! -f "$temp_file" ]]; then
+        error "Не удалось создать временный файл"
+        pause
+        return
+    fi
+    
+    # Проверяем JSON
+    if ! jq empty "$temp_file" 2>/dev/null; then
+        error "Невалидный JSON"
+        cat "$temp_file"
+        rm -f "$temp_file"
+        pause
+        return
+    fi
+    
+    # Копируем в финальное место
+    cp "$temp_file" "$profile_file"
+    rm -f "$temp_file"
+    
+    # Проверяем что профиль создан
+    if [[ ! -f "$profile_file" ]]; then
+        error "Не удалось создать профиль: $profile_file"
+        pause
+        return
+    fi
+    
+    success "Профиль создан: $profile_file"
+    
+    # Показываем содержимое
+    echo
+    info "Содержимое профиля:"
+    cat "$profile_file" | jq .
     echo
     
     # Перезапускаем сервис
     info "🔄 Перезапускаю сервис..."
-    systemctl restart "$SERVICE"
+    systemctl restart "$SERVICE" 2>&1
+    
+    sleep 2
     
     success "Готово! Профиль добавлен и мониторинг запущен!"
     echo
