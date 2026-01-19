@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  vps-watchdog:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: vps-watchdog
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ./config:/app/config:ro
+      - ./profiles:/app/profiles:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - SA_KEY_FILE=/app/config/sa-key.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "monitor.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
