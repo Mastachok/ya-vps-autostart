@@ -56,18 +56,24 @@ curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/ins
 sudo vps-watchdog
 ```
 
-#### 1️⃣ Добавь профиль VM (пункт 2)
+#### 1️⃣ Загрузи Service Account ключ (ОБЯЗАТЕЛЬНО!)
+- Выбери пункт **"📤 Загрузить SA ключ"**
+- Следуй инструкции на экране
+- [Подробная инструкция →](docs/SERVICE_ACCOUNT_SETUP.md)
+
+#### 2️⃣ Добавь профиль VM
+- Выбери пункт **"➕ Добавить профиль (OAuth)"**
 - Откроется ссылка для OAuth токена
 - Скрипт автоматически найдёт все твои VM
 - Выбери VM для мониторинга
 - Профиль создан! ✅
 
-#### 2️⃣ Настрой Telegram (пункт 6)
+#### 3️⃣ Настрой Telegram (опционально)
 - Создай бота через [@BotFather](https://t.me/botfather)
 - Укажи Bot Token и Chat ID
 - Получи тестовое уведомление! 📱
 
-#### 3️⃣ Запусти мониторинг
+#### 4️⃣ Запусти мониторинг
 
 ```bash
 sudo systemctl start vps-watchdog
@@ -75,6 +81,73 @@ sudo docker logs -f vps-watchdog
 ```
 
 **Готово!** 🎉
+
+---
+
+## ⚠️ ВАЖНО: Service Account ключ
+
+### 🔑 Без SA ключа VPS Watchdog НЕ СМОЖЕТ запускать VM!
+
+Service Account (SA) - это специальный аккаунт в Yandex Cloud который позволяет VPS Watchdog:
+- ✅ Запускать упавшие VM через API
+- ✅ Проверять статус операций
+- ✅ Управлять виртуальными машинами
+
+### Быстрая настройка (3 шага):
+
+#### Шаг 1: Создай Service Account в Yandex Cloud
+
+1. Открой [Yandex Cloud Console](https://console.cloud.yandex.ru/)
+2. Выбери folder где находятся твои VM
+3. Меню → **"Сервисные аккаунты"** → **"Создать"**
+4. Имя: `vps-watchdog-sa`
+5. Роль: **`compute.operator`** ⚠️ ОБЯЗАТЕЛЬНО!
+
+#### Шаг 2: Скачай ключ
+
+1. Открой созданный SA
+2. Вкладка **"Ключи"** → **"Создать авторизованный ключ"**
+3. **Скачай JSON файл**
+
+#### Шаг 3: Загрузи через меню
+
+```bash
+sudo vps-watchdog
+# Выбери: "📤 Загрузить SA ключ"
+# Следуй инструкциям на экране
+```
+
+### 📚 Полная инструкция
+
+👉 **[docs/SERVICE_ACCOUNT_SETUP.md](docs/SERVICE_ACCOUNT_SETUP.md)** - Подробная инструкция с примерами
+
+---
+
+## 🎯 Чеклист перед запуском
+
+Убедись что выполнено:
+
+- [ ] ✅ **Service Account создан** в Yandex Cloud
+- [ ] ✅ SA имеет роль **`compute.operator`** на folder с VM
+- [ ] ✅ SA ключ загружен через меню или в `/opt/vps-watchdog/config/sa-key.json`
+- [ ] ✅ Добавлен хотя бы один профиль VM
+- [ ] ✅ (Опционально) Настроен Telegram бот
+- [ ] ✅ Сервис запущен: `sudo systemctl start vps-watchdog`
+
+### Проверка:
+
+```bash
+# Проверь что SA ключ на месте
+ls -la /opt/vps-watchdog/config/sa-key.json
+
+# Проверь логи
+sudo docker logs vps-watchdog
+
+# Должно быть:
+# ✅ Service Account авторизован
+# ✅ Найдено X активных профилей
+# ✅ VM мониторится
+```
 
 ---
 
@@ -165,16 +238,6 @@ sudo docker logs -f vps-watchdog
 1. Напиши [@userinfobot](https://t.me/userinfobot)
 2. Он покажет твой Chat ID
 
-### Команды бота (в разработке)
-
-```
-/start   - Приветствие
-/status  - Статус всех VM
-/logs    - Последние логи
-/stats   - Статистика
-/help    - Помощь
-```
-
 ### Пример уведомления
 
 ```
@@ -182,7 +245,7 @@ sudo docker logs -f vps-watchdog
 
 📊 Профиль: Production Server
 🌐 IP: 158.160.75.118
-⏰ Время: 17.01.2026 12:30:15
+⏰ Время: 19.01.2026 15:30:00
 🔄 Попытка запуска: #1
 
 ⚙️ Запускаю VM через Yandex Cloud API...
@@ -199,6 +262,7 @@ sudo docker logs -f vps-watchdog
    📝 Профилей: 3 (активных: 2)
    ⚙️  Сервис: работает
    📱 Telegram: подключен
+   🔑 SA ключ: настроен
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -218,6 +282,10 @@ sudo docker logs -f vps-watchdog
   9) 🔧 Управление сервисом
   10) 📜 Показать логи
   11) 📈 Статистика
+
+🔑 SERVICE ACCOUNT:
+  12) 📤 Загрузить SA ключ
+  13) 🔍 Проверить SA ключ
 
 ℹ️  ИНФОРМАЦИЯ:
   0) ❓ Помощь
@@ -275,52 +343,6 @@ curl -fsSL https://raw.githubusercontent.com/Mastachok/ya-vps-autostart/main/ins
 
 ---
 
-## 🆚 Отличия от v2.0
-
-| Функция | v2.0 | v3.0 |
-|---------|------|------|
-| Количество VM | 1 | ♾️ Неограниченно |
-| Telegram | ❌ | ✅ Полная интеграция |
-| OAuth в меню | ❌ | ✅ Встроен |
-| Проверка операций | ⚠️ Частично | ✅ Полная |
-| Профили | ❌ | ✅ JSON профили |
-| Статистика | ❌ | ✅ Uptime/downtime |
-| Многопоточность | ❌ | ✅ Каждая VM в потоке |
-| Миграция | - | ✅ Автоматическая |
-
----
-
-## 📊 Примеры использования
-
-### Случай 1: Один сервер, несколько VM
-
-```
-Watchdog на Hetzner VPS (€3/мес)
-    ↓
-Мониторит 5 VM в Yandex Cloud
-```
-
-### Случай 2: Домашний сервер
-
-```
-Raspberry Pi дома
-    ↓
-Мониторит продакшн VM в облаке
-    ↓
-Уведомления в Telegram на телефон
-```
-
-### Случай 3: Dev + Staging + Prod
-
-```
-1 Watchdog следит за:
-  • Dev VM (может падать часто)
-  • Staging VM (редко)
-  • Production VM (критично!)
-```
-
----
-
 ## ❓ FAQ
 
 ### Watchdog должен быть в Yandex Cloud?
@@ -332,6 +354,24 @@ Raspberry Pi дома
 - ✅ VPS в любом датацентре
 
 Главное - стабильный интернет и Docker.
+
+### В чём разница между OAuth и Service Account?
+
+| OAuth токен | Service Account ключ |
+|-------------|---------------------|
+| Для поиска VM в меню | Для запуска VM |
+| Временный (истекает) | Постоянный |
+| Используется интерактивно | Используется автоматически |
+| ✅ Удобство добавления | ✅ Работа мониторинга |
+
+**Оба нужны!** OAuth для удобства, SA для функционала.
+
+### Можно ли обойтись без Service Account?
+
+❌ **НЕТ!** Без SA ключа VPS Watchdog:
+- ✅ Будет пинговать VM
+- ✅ Отправлять уведомления о падении
+- ❌ **НО НЕ СМОЖЕТ запускать VM!**
 
 ### Что если watchdog упадёт?
 
@@ -345,45 +385,54 @@ Raspberry Pi дома
 
 **Неограниченно!** Ограничение только в ресурсах watchdog сервера (каждая VM занимает ~10-20 МБ RAM).
 
-### Можно ли мониторить VM в разных folders?
-
-**ДА!** Каждый профиль может иметь свой folder_id.
-
-### Как получить логи для баг-репорта?
-
-```bash
-sudo docker logs vps-watchdog > watchdog-logs.txt
-cat /opt/vps-watchdog/logs/watchdog.log >> watchdog-logs.txt
-```
-
 ---
 
 ## 🐛 Проблемы и решения
 
-### Ошибка "Permission denied" для ключа
+### "No such file: sa-key.json"
+
+**Причина:** Service Account ключ не загружен
+
+**Решение:**
+```bash
+# Через меню
+sudo vps-watchdog
+# Выбери: "📤 Загрузить SA ключ"
+
+# Или вручную
+sudo nano /opt/vps-watchdog/config/sa-key.json
+# Вставь содержимое скачанного JSON
+sudo chmod 600 /opt/vps-watchdog/config/sa-key.json
+```
+
+### "Не удалось запустить VM"
+
+**Причина:** У SA нет прав или ключ невалидный
+
+**Решение:**
+1. Проверь что SA имеет роль `compute.operator`
+2. Проверь что ключ валиден: `cat /opt/vps-watchdog/config/sa-key.json | jq .`
+3. Перезапусти сервис: `sudo systemctl restart vps-watchdog`
+
+### "Permission denied" для ключа
 
 ```bash
 sudo chmod 600 /opt/vps-watchdog/config/sa-key.json
+sudo chown root:root /opt/vps-watchdog/config/sa-key.json
 sudo systemctl restart vps-watchdog
 ```
 
-### Ошибка "operation is in process"
+### VM не запускается после многих попыток
 
-Это нормально! Скрипт ждёт завершения текущей операции и попробует снова.
+Отредактируй профиль:
+```bash
+sudo nano /opt/vps-watchdog/profiles/<profile_id>.json
 
-### VM не запускается
-
-Проверь:
-1. Правильность Instance ID в профиле
-2. Наличие прав у Service Account (`compute.operator`)
-3. Статус VM в веб-консоли Yandex Cloud
-
-### Telegram не работает
-
-Проверь:
-1. Правильность Bot Token
-2. Правильность Chat ID
-3. Бот должен получить хотя бы одно сообщение от тебя
+# Измени:
+"cooldown_minutes": 1,          # было 5
+"max_start_attempts": 10,       # было 3
+"check_interval": 30            # было 60
+```
 
 ---
 
@@ -407,14 +456,6 @@ MIT License - делай что хочешь! 🎉
 - [Docker](https://www.docker.com/) за контейнеризацию
 - [Telegram](https://telegram.org/) за Bot API
 - Всем контрибьюторам! ❤️
-
----
-
-## 📞 Контакты
-
-- 💬 Telegram: @your_username
-- 🐛 Issues: [GitHub](https://github.com/Mastachok/ya-vps-autostart/issues)
-- 📧 Email: your@email.com
 
 ---
 
