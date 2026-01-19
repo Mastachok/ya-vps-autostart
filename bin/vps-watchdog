@@ -5,7 +5,7 @@ set -euo pipefail
 # VPS WATCHDOG v3.0 - Интерактивное меню
 # ═══════════════════════════════════════════════════════════════════
 
-VERSION="3.0.0"
+VERSION="3.0.1"
 CONFIG_DIR="/opt/vps-watchdog/config"
 PROFILES_DIR="/opt/vps-watchdog/profiles"
 DATA_DIR="/opt/vps-watchdog/data"
@@ -58,17 +58,28 @@ pause() {
 }
 
 count_profiles() {
+    # Создаём директорию если не существует
+    mkdir -p "$PROFILES_DIR" 2>/dev/null || true
+    
     if [[ ! -d "$PROFILES_DIR" ]]; then
         echo "0 0"
         return
     fi
-    local total=$(find "$PROFILES_DIR" -name "*.json" 2>/dev/null | wc -l)
+    
+    local total=$(find "$PROFILES_DIR" -maxdepth 1 -name "*.json" -type f 2>/dev/null | wc -l)
     local enabled=0
+    
+    # Проверяем наличие jq перед использованием
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "$total ?"
+        return
+    fi
+    
     shopt -s nullglob
     for file in "$PROFILES_DIR"/*.json; do
         [[ -f "$file" ]] || continue
         if jq -e '.enabled == true' "$file" >/dev/null 2>&1; then
-            ((enabled++))
+            ((enabled++)) || true
         fi
     done
     shopt -u nullglob
@@ -102,7 +113,11 @@ get_telegram_status() {
 main_menu() {
     while true; do
         clear
-        read -r total enabled < <(count_profiles)
+        # ИСПРАВЛЕНО: Безопасное чтение профилей без process substitution
+        local profile_info
+        profile_info=$(count_profiles)
+        local total=$(echo "$profile_info" | cut -d' ' -f1)
+        local enabled=$(echo "$profile_info" | cut -d' ' -f2)
         
         title "═══════════════════════════════════════════════════════════════"
         title "           🛡️  VPS WATCHDOG v${VERSION}                        "
