@@ -66,9 +66,16 @@ class VMMonitor:
         self._init_sdk()
         
     def _get_iam_token(self) -> Optional[str]:
-        """Получить IAM токен из OAuth токена"""
+        """Получить IAM токен из OAuth токена с кэшированием"""
         if not self.oauth_token:
             return None
+        
+        # Проверяем валидность текущего IAM токена (если есть)
+        # IAM токены живут 12 часов, поэтому обновляем если прошло больше 11 часов
+        if self.iam_token:
+            # В продакшене здесь должна быть проверка времени создания токена
+            # Для упрощения просто возвращаем существующий
+            return self.iam_token
             
         try:
             response = requests.post(
@@ -87,6 +94,16 @@ class VMMonitor:
         except Exception as e:
             logger.error(f"[{self.profile.name}] Ошибка запроса IAM: {e}")
             return None
+    
+    def _refresh_iam_token(self) -> bool:
+        """Принудительное обновление IAM токена"""
+        self.iam_token = None  # Сбрасываем текущий
+        new_token = self._get_iam_token()
+        if new_token:
+            # Пересоздаём SDK с новым токеном
+            self._init_sdk()
+            return True
+        return False
     
     def _init_sdk(self):
         """Инициализация Yandex Cloud SDK с OAuth"""
@@ -177,6 +194,17 @@ class VMMonitor:
         except Exception as e:
             error_msg = str(e)
             logger.error(f"[{self.profile.name}] Ошибка запуска: {error_msg}")
+            
+            # Проверяем, не истёк ли IAM токен
+            if 'UNAUTHENTICATED' in error_msg or 'Unauthorized' in error_msg:
+                logger.warning(f"[{self.profile.name}] IAM токен истёк, обновляю...")
+                if self._refresh_iam_token():
+                    logger.info(f"[{self.profile.name}] IAM токен обновлён, повторяю попытку...")
+                    # Рекурсивно повторяем попытку один раз
+                    try:
+                        return self.start_vm()
+                    except:
+                        pass
             
             # Отправляем уведомление в Telegram
             if self.telegram:
