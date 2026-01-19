@@ -1121,7 +1121,30 @@ show_logs() {
     title "═══════════════════════════════════════════════════════════════"
     echo
     
-    docker logs --tail 50 vps-watchdog 2>&1
+    # Ищем имя контейнера (может быть vps-watchdog, vps-watchdog-app-1, и т.д.)
+    local container_name=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i vps-watchdog | head -1)
+    
+    if [[ -z "$container_name" ]]; then
+        # Проверяем остановленные контейнеры
+        container_name=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -i vps-watchdog | head -1)
+        
+        if [[ -z "$container_name" ]]; then
+            error "Контейнер VPS Watchdog не найден"
+            echo
+            info "Проверь что сервис запущен:"
+            echo "   sudo systemctl status vps-watchdog"
+        else
+            warn "Контейнер найден, но он остановлен: $container_name"
+            echo
+            info "Показываю последние логи:"
+            echo
+            docker logs --tail 50 "$container_name" 2>&1
+        fi
+    else
+        info "Контейнер: $container_name"
+        echo
+        docker logs --tail 50 "$container_name" 2>&1
+    fi
     
     pause
 }
