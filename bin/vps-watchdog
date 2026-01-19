@@ -5,11 +5,11 @@ set -euo pipefail
 # VPS WATCHDOG v3.0 - Интерактивное меню
 # ═══════════════════════════════════════════════════════════════════
 
-VERSION="3.0.1"
+VERSION="3.0.1-SA"
 CONFIG_DIR="/opt/vps-watchdog/config"
 PROFILES_DIR="/opt/vps-watchdog/profiles"
 DATA_DIR="/opt/vps-watchdog/data"
-KEY_FILE="$CONFIG_DIR/sa-key.json"
+SA_KEY_FILE="$CONFIG_DIR/sa-key.json"
 TELEGRAM_CONFIG="$CONFIG_DIR/telegram.json"
 SERVICE="vps-watchdog"
 
@@ -95,6 +95,14 @@ get_service_status() {
 }
 
 get_telegram_status() {
+
+check_sa_key() {
+    if [[ -f "$SA_KEY_FILE" ]]; then
+        echo -e "${GREEN}настроен${NC}"
+    else
+        echo -e "${YELLOW}не найден${NC}"
+    fi
+}
     if [[ -f "$TELEGRAM_CONFIG" ]]; then
         if jq -e '.enabled == true' "$TELEGRAM_CONFIG" >/dev/null 2>&1; then
             echo -e "${GREEN}подключен${NC}"
@@ -136,6 +144,7 @@ main_menu() {
         echo -e "   📝 Профилей: ${BOLD}$total${NC} (активных: ${GREEN}$enabled${NC})"
         echo -e "   ⚙️  Сервис: $(get_service_status)"
         echo -e "   📱 Telegram: $(get_telegram_status)"
+        echo -e "   🔑 SA ключ: $(check_sa_key)"
         echo -e "   🔑 SA ключ: $(get_sa_status)"
         
         hr
@@ -162,6 +171,11 @@ main_menu() {
         echo "  13) 📤 Загрузить SA ключ"
         echo "  14) 🔍 Проверить SA ключ"
         echo
+        echo -e "${BOLD}🔐 АВТОРИЗАЦИЯ:${NC}"
+        echo "  12) 🔑 Управление OAuth токеном"
+        echo "  13) 📥 Загрузить SA ключ"
+        echo "  14) 🔍 Проверить SA ключ"
+        echo
         echo -e "${BOLD}ℹ️  ИНФОРМАЦИЯ:${NC}"
         echo "  0) ❓ Помощь"
         echo "  q) 🚪 Выход"
@@ -181,9 +195,11 @@ main_menu() {
             9) service_menu ;;
             10) show_logs ;;
             11) show_stats ;;
-            12) manage_oauth ;;
             13) upload_sa_key ;;
             14) check_sa_key ;;
+            12) warn "OAuth больше не используется, используй SA ключ (пункт 13)"; pause ;;
+            13) upload_sa_key ;;
+            14) verify_sa_key ;;
             0) show_help ;;
             q|Q) exit 0 ;;
             *) warn "Неверный выбор"; pause ;;
