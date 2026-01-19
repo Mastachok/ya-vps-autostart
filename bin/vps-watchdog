@@ -9,7 +9,7 @@ VERSION="3.0.1"
 CONFIG_DIR="/opt/vps-watchdog/config"
 PROFILES_DIR="/opt/vps-watchdog/profiles"
 DATA_DIR="/opt/vps-watchdog/data"
-KEY_FILE="$CONFIG_DIR/sa-key.json"
+SA_KEY_FILE="$CONFIG_DIR/sa-key.json"
 TELEGRAM_CONFIG="$CONFIG_DIR/telegram.json"
 SERVICE="vps-watchdog"
 
